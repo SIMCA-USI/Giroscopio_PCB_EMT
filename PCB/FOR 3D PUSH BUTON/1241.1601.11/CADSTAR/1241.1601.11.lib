@@ -1,0 +1,16 @@
+.1241.1601.11 :1 ;Tactile Switch, SPST-NO 50 mA 1.3mm
+"1241160111"
+*STM S
+*NGS
+*PLB 1="1" 2="2" 3="3" 4="4"
+*MXP 4
+*DFN 1241.1601.11
+~!Mouser Part Number (693-1241.1601.11)
+~!Link Mouser Price/Stock (https://www.mouser.co.uk/ProductDetail/Schurter/1241.1601.11?qs=JHn%2F0Af%2Fl5F%252BolDciTzQ0A%3D%3D)
+~!Manufacturer_Name (SCHURTER)
+~!Manufacturer_Part_Number (1241.1601.11)
+~!Link Datasheet (https://componentsearchengine.com/Datasheets/1/1241.1601.11.pdf)
+~!Height (4.95mm)
+~!3D_Model (1241.1601.11)
+"1241.1601.11"
+1.1!U 2.1!U 3.1!U 4.1!U 

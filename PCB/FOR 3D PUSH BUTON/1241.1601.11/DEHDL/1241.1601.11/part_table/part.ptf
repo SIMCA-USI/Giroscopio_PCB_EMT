@@ -1,0 +1,11 @@
+FILE_TYPE = MULTI_PHYS_TABLE;
+
+PART '1241.1601.11'
+CLASS = DISCRETE
+{========================================================================================}
+:"MANUFACTURER_NAME", "MANUFACTURER_PART_NUMBER"= "PART_NUMBER", "JEDEC_TYPE", "PACK_TYPE", "MOUSER_PART_NUMBER", "MOUSER_PRICE/STOCK", "DESCRIPTION", "DATASHEET", "HEIGHT";
+{========================================================================================}
+ "SCHURTER", "1241.1601.11" (!) = "", "1241160111", "Other", "693-1241.1601.11", "https://www.mouser.co.uk/ProductDetail/Schurter/1241.1601.11?qs=JHn%2F0Af%2Fl5F%252BolDciTzQ0A%3D%3D", "Tactile Switch, SPST-NO 50 mA 1.3mm", "https://componentsearchengine.com/Datasheets/1/1241.1601.11.pdf", "4.95 mm"
+END_PART
+
+END.

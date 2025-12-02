@@ -1,0 +1,124 @@
+;Proteus Design Interchange Format
+(PDIF
+ (vendor "SamacSys Limited")
+ (version 1 0)
+ (library
+  (part "1241.1601.11"
+   (description "Tactile Switch, SPST-NO 50 mA 1.3mm")
+   (family "SWI")
+   (package "1241160111")
+   (attribute "Datasheet Link" "https://componentsearchengine.com/Datasheets/1/1241.1601.11.pdf")
+   (attribute "Geometry.Height" "4.95mm")
+   (attribute "Mouser Part Number" "693-1241.1601.11")
+   (attribute "Mouser Price/Stock" "https://www.mouser.co.uk/ProductDetail/Schurter/1241.1601.11?qs=JHn%2F0Af%2Fl5F%252BolDciTzQ0A%3D%3D")
+   (attribute "Manufacturer_Name" "SCHURTER")
+   (attribute "Manufacturer_Part_Number" "1241.1601.11")
+   (gate
+    (symbol "1241.1601.11")
+    (pin "1" 1 PS)
+    (pin "2" 2 PS)
+    (pin "3" 3 PS)
+    (pin "4" 4 PS)
+   )
+  )
+  (symbol "1241.1601.11"
+   (units THOU)
+   (origin (pt 0 0))
+   (graphic
+    (stroke 10)
+    (path (pt 200 100) (pt 600 100) (pt 600 -200) (pt 200 -200) (pt 200 100) (closed))
+   )
+   (terminal
+    (body (symbol "PIN") (pt 0 -100) (rot 0) (mir 0) (visible true))
+    (name (pt 230 0) (rot 0) (just MIDDLE LEFT) (visible true))
+    (number (pt 140 20) (rot 0) (just BOTTOM RIGHT) (visible true)))
+   (terminal
+    (body (symbol "PIN") (pt 800 -100) (rot 0) (mir X) (visible true))
+    (name (pt 230 0) (rot 0) (just MIDDLE LEFT) (visible true))
+    (number (pt 140 20) (rot 0) (just BOTTOM RIGHT) (visible true)))
+   (terminal
+    (body (symbol "PIN") (pt 800 0) (rot 0) (mir X) (visible true))
+    (name (pt 230 0) (rot 0) (just MIDDLE LEFT) (visible true))
+    (number (pt 140 20) (rot 0) (just BOTTOM RIGHT) (visible true)))
+   (terminal
+    (body (symbol "PIN") (pt 0 0) (rot 0) (mir 0) (visible true))
+    (name (pt 230 0) (rot 0) (just MIDDLE LEFT) (visible true))
+    (number (pt 140 20) (rot 0) (just BOTTOM RIGHT) (visible true)))
+  )
+  (symbol "PIN"
+   (units THOU)
+   (origin (pt 0 0))
+   (graphic
+    (stroke 10)
+    (path (pt 0 0) (pt 200 0))))
+  (symbol "PINSHORT"
+   (units THOU)
+   (origin (pt 0 0))
+   (graphic
+    (stroke 10)
+    (path (pt 0 0) (pt 100 0))))
+  (package "1241160111"
+   (units MM)
+   (layer TASM
+    (graphic
+     (stroke 0.2)
+     (path
+      (closed true)
+      (pt -5.7 5.7)
+      (pt 5.7 5.7)
+      (pt 5.7 -5.7)
+      (pt -5.7 -5.7)
+      (pt -5.7 5.7))))
+   (layer OCCA
+    (graphic
+     (stroke 0.1)
+     (path
+      (closed true)
+      (pt -7.5 6.7)
+      (pt 7.5 6.7)
+      (pt 7.5 -6.7)
+      (pt -7.5 -6.7)
+      (pt -7.5 6.7))))
+   (layer TSLK
+    (graphic
+     (stroke 0.1)
+     (path
+      (closed false)
+      (pt -5.7 -5.7)
+      (pt 5.7 -5.7))))
+   (layer TSLK
+    (graphic
+     (stroke 0.1)
+     (path
+      (closed false)
+      (pt -5.7 5.7)
+      (pt 5.7 5.7))))
+   (layer TSLK
+    (graphic
+     (stroke 0.1)
+     (path
+      (closed false)
+      (pt -5.7 2.4)
+      (pt -5.7 -2.4))))
+   (layer TSLK
+    (graphic
+     (stroke 0.1)
+     (path
+      (closed false)
+      (pt 5.7 2.4)
+      (pt 5.7 -2.4))))
+   (leg 1 (pt -5.000 -3.750) (padstack 0))
+   (leg 2 (pt 5.000 -3.750) (padstack 0))
+   (leg 3 (pt 5.000 3.750) (padstack 0))
+   (leg 4 (pt -5.000 3.750) (padstack 0))
+   (padstack 0
+    (plated false)
+    (pad (layer TCOP) (rectf 2.000 3.000 0 0 0.000))
+   )
+   (model "1241.1601.11.stp"
+    (euler 90 180 0)
+    (offset 0 0 3.6500000953674316)
+   )
+  )
+ )
+)

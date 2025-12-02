@@ -1,0 +1,6 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "ProLib_pcs_2025-12-01")(type "KiCad")(uri "${KIPRJMOD}/ProLib_pcs_2025-12-01.pretty")(options "")(descr ""))
+  (lib (name "PADS_SS-12D11G5R_2025-12-01")(type "KiCad")(uri "${KIPRJMOD}/PADS_SS-12D11G5R_2025-12-01.pretty")(options "")(descr ""))
+  (lib (name "Switch_Yuandi_THT")(type "KiCad")(uri "${KIPRJMOD}/Switch_Yuandi_THT.pretty")(options "")(descr ""))
+)

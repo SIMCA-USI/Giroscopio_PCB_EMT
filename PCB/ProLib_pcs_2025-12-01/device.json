@@ -1,0 +1,145 @@
+{
+    "devices": {
+        "e3488ca5d45149c78a5d42aba5f1c74f": {
+            "attributes": {
+                "LCSC Part Name": "柄长5mm 弯插双档 滑动开关",
+                "Supplier Part": "C388633",
+                "Manufacturer": "XKB Connection(中国星坤)",
+                "Manufacturer Part": "SS-12D11G5R",
+                "Supplier Footprint": "插件",
+                "JLCPCB Part Class": "Extended Part",
+                "Datasheet": "https://item.szlcsc.com/datasheet/SS-12D11G5R/363903.html",
+                "Supplier": "LCSC",
+                "Add into BOM": "yes",
+                "Convert to PCB": "yes",
+                "Symbol": "2bc3bf657fce482b86d341412b64cc09",
+                "Designator": "SW?",
+                "Footprint": "4a35f2e5740c4e9590bf2fe08bc288a8",
+                "3D Model": "d9ff1c333de14b24b2368a8d6c037c8c",
+                "3D Model Title": "SW-TH_SS-12D11G5R",
+                "3D Model Transform": "531.495,647.6365,0,0,0,0,0,118.11,-122.047",
+                "Circuit": "SPDT",
+                "Actuator Style": "Rectangular Columnar",
+                "Termination Style": "PC Pin",
+                "Length": "-",
+                "Width": "-",
+                "Switch Height": "-",
+                "Mounting Type": "Right Angle",
+                "Actuator Color": "Black",
+                "Current Rating": "3A",
+                "Voltage Rating": "125V",
+                "Life": "10,000 Cycles",
+                "Operating Temperature": "-40℃~+85℃",
+                "Name": "={Manufacturer Part}",
+                "Description": "Circuit:SPDT Actuator Style:Rectangular Columnar Termination Style:PC Pin Length:- Width:- Switch Height:- Mounting Type:Right Angle Actuator Color:Black Current Rating:3A Voltage Rating:125V Life:10,000 Cycles Operating Temperature:-40℃~+85℃ Operating Te"
+            },
+            "createTime": 1648891402,
+            "created_at": "2022-04-02 09:23:22",
+            "creator": {
+                "uuid": "0819f05c4eef4c71ace90d822a990e87",
+                "username": "LCSC",
+                "nickname": "LCSC",
+                "avatar": "/images/lcsc.png"
+            },
+            "description": "Circuit:SPDT Actuator Style:Rectangular Columnar Termination Style:PC Pin Length:- Width:- Switch Height:- Mounting Type:Right Angle Actuator Color:Black Current Rating:3A Voltage Rating:125V Life:10,000 Cycles Operating Temperature:-40℃~+85℃ Operating Te",
+            "display_title": "SS-12D11G5R",
+            "footprint_type": 4,
+            "images": [
+                "https://alimg.szlcsc.com/upload/public/product/middle/20230220/B46109BBB2BBBF938C5EA7BA4FDA5A70.jpg"
+            ],
+            "product_code": "C388633",
+            "project_uuid": "",
+            "source": "",
+            "symbol_type": 2,
+            "tags": {
+                "parent_tag": [],
+                "child_tag": []
+            },
+            "ticket": 101,
+            "title": "ss-12d11g5r",
+            "updateTime": 0,
+            "updated_at": "2025-11-24 18:33:35",
+            "version": 0,
+            "isFavorite": false,
+            "symbol": {
+                "uuid": "2bc3bf657fce482b86d341412b64cc09",
+                "display_title": "SS-12D11G5R",
+                "title": "ss-12d11g5r"
+            },
+            "footprint": {
+                "uuid": "4a35f2e5740c4e9590bf2fe08bc288a8",
+                "display_title": "SW-TH_SS-12D11G5R",
+                "title": "sw-th_ss-12d11g5r"
+            },
+            "custom_tags": "[\"Switches\",\"Slide Switches\"]"
+        }
+    },
+    "symbols": {
+        "2bc3bf657fce482b86d341412b64cc09": {
+            "createTime": 1648879632,
+            "created_at": "2022-04-02 06:07:12",
+            "creator": {
+                "uuid": "0819f05c4eef4c71ace90d822a990e87",
+                "username": "LCSC",
+                "nickname": "LCSC",
+                "avatar": "/images/lcsc.png"
+            },
+            "description": "",
+            "display_title": "SS-12D11G5R",
+            "docType": 2,
+            "public": true,
+            "source": "",
+            "tags": {
+                "parent_tag": [],
+                "child_tag": []
+            },
+            "ticket": 2,
+            "title": "ss-12d11g5r",
+            "type": 3,
+            "updateTime": 0,
+            "updated_at": "2025-11-24 18:33:35",
+            "version": 0,
+            "std_uuid": "c7b6caddab8049ec967c9322b26eaccf",
+            "dataStrId": "https://image-pro.easyeda.com/datastr/1a/d7/c9/11/83c14cf89d7081f15262fc7d",
+            "iv": "5743625c98603ca86a07d044",
+            "key": "9c6822ac444e33ef685782fe64eb777887d6461a47e79c576658c218954967e5",
+            "path": "0819f05c4eef4c71ace90d822a990e87",
+            "custom_tags": "[\"Switches\",\"Slide Switches\"]"
+        }
+    },
+    "footprints": {
+        "4a35f2e5740c4e9590bf2fe08bc288a8": {
+            "createTime": 1648879934,
+            "created_at": "2022-04-02 06:12:14",
+            "creator": {
+                "uuid": "0819f05c4eef4c71ace90d822a990e87",
+                "username": "LCSC",
+                "nickname": "LCSC",
+                "avatar": "/images/lcsc.png"
+            },
+            "description": ";插件",
+            "display_title": "SW-TH_SS-12D11G5R",
+            "docType": 4,
+            "public": true,
+            "source": "",
+            "tags": {
+                "parent_tag": [],
+                "child_tag": []
+            },
+            "ticket": 1,
+            "title": "sw-th_ss-12d11g5r",
+            "type": 3,
+            "updateTime": 0,
+            "updated_at": "2025-01-08 02:16:24",
+            "version": 0,
+            "std_uuid": "1768cc3dd63e4a47a07a35f02ff4d3be",
+            "model_3d": {
+                "title": "SW-TH_SS-12D11G5R",
+                "uri": "d9ff1c333de14b24b2368a8d6c037c8c",
+                "transform": "531.495,647.6365,0,0,0,0,0,118.11,-122.047"
+            },
+            "path": "0819f05c4eef4c71ace90d822a990e87",
+            "custom_tags": "[\"SW-TH\"]"
+        }
+    }
+}

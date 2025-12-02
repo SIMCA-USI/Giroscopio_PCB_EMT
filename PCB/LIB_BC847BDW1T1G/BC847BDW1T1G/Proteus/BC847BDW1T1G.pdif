@@ -1,0 +1,132 @@
+;Proteus Design Interchange Format
+(PDIF
+ (vendor "SamacSys Limited")
+ (version 1 0)
+ (library
+  (part "BC847BDW1T1G"
+   (description "Device Marking: BC846BDW1T1 = 1B BC847BDW1T1 = 1F BC847CDW1T1 = 1G BC848BDW1T1 = 1K BC848CDW1T1 = 1L; These Devices are Pb-Free, Halogen Free/BFR Free and are RoHS Compliant; S and NSV Prefix for Automotive and Other Applications Requiring Unique Site and Control Change Requirements; AECQ101 Qualified and PPAP Capable")
+   (family "ANA")
+   (package "SOT65P210X110-6N")
+   (attribute "Datasheet Link" "https://www.onsemi.com/pub/Collateral/BC846BDW1T1-D.PDF")
+   (attribute "Geometry.Height" "1.1mm")
+   (attribute "Mouser Part Number" "863-BC847BDW1T1G")
+   (attribute "Mouser Price/Stock" "https://www.mouser.co.uk/ProductDetail/onsemi/BC847BDW1T1G?qs=vNc2DXHODiJIIkxW3oEo4A%3D%3D")
+   (attribute "Manufacturer_Name" "onsemi")
+   (attribute "Manufacturer_Part_Number" "BC847BDW1T1G")
+   (gate
+    (symbol "BC847BDW1T1G")
+    (pin "E2" 1 PS)
+    (pin "B2" 2 PS)
+    (pin "C1" 3 PS)
+    (pin "C2" 6 PS)
+    (pin "B1" 5 PS)
+    (pin "E1" 4 PS)
+   )
+  )
+  (symbol "BC847BDW1T1G"
+   (units THOU)
+   (origin (pt 0 0))
+   (graphic
+    (stroke 10)
+    (path (pt 200 100) (pt 700 100) (pt 700 -300) (pt 200 -300) (pt 200 100) (closed))
+   )
+   (terminal
+    (body (symbol "PIN") (pt 0 0) (rot 0) (mir 0) (visible true))
+    (name (pt 230 0) (rot 0) (just MIDDLE LEFT) (visible true))
+    (number (pt 140 20) (rot 0) (just BOTTOM RIGHT) (visible true)))
+   (terminal
+    (body (symbol "PIN") (pt 0 -100) (rot 0) (mir 0) (visible true))
+    (name (pt 230 0) (rot 0) (just MIDDLE LEFT) (visible true))
+    (number (pt 140 20) (rot 0) (just BOTTOM RIGHT) (visible true)))
+   (terminal
+    (body (symbol "PIN") (pt 0 -200) (rot 0) (mir 0) (visible true))
+    (name (pt 230 0) (rot 0) (just MIDDLE LEFT) (visible true))
+    (number (pt 140 20) (rot 0) (just BOTTOM RIGHT) (visible true)))
+   (terminal
+    (body (symbol "PIN") (pt 900 0) (rot 0) (mir X) (visible true))
+    (name (pt 230 0) (rot 0) (just MIDDLE LEFT) (visible true))
+    (number (pt 140 20) (rot 0) (just BOTTOM RIGHT) (visible true)))
+   (terminal
+    (body (symbol "PIN") (pt 900 -100) (rot 0) (mir X) (visible true))
+    (name (pt 230 0) (rot 0) (just MIDDLE LEFT) (visible true))
+    (number (pt 140 20) (rot 0) (just BOTTOM RIGHT) (visible true)))
+   (terminal
+    (body (symbol "PIN") (pt 900 -200) (rot 0) (mir X) (visible true))
+    (name (pt 230 0) (rot 0) (just MIDDLE LEFT) (visible true))
+    (number (pt 140 20) (rot 0) (just BOTTOM RIGHT) (visible true)))
+  )
+  (symbol "PIN"
+   (units THOU)
+   (origin (pt 0 0))
+   (graphic
+    (stroke 10)
+    (path (pt 0 0) (pt 200 0))))
+  (symbol "PINSHORT"
+   (units THOU)
+   (origin (pt 0 0))
+   (graphic
+    (stroke 10)
+    (path (pt 0 0) (pt 100 0))))
+  (package "SOT65P210X110-6N"
+   (units MM)
+   (layer OCCA
+    (graphic
+     (stroke 0.05)
+     (path
+      (closed true)
+      (pt -1.725 1.35)
+      (pt 1.725 1.35)
+      (pt 1.725 -1.35)
+      (pt -1.725 -1.35)
+      (pt -1.725 1.35))))
+   (layer TASM
+    (graphic
+     (stroke 0.1)
+     (path
+      (closed true)
+      (pt -0.625 1)
+      (pt 0.625 1)
+      (pt 0.625 -1)
+      (pt -0.625 -1)
+      (pt -0.625 1))))
+   (layer TASM
+    (graphic
+     (stroke 0.1)
+     (path
+      (closed false)
+      (pt -0.625 0.35)
+      (pt 0.025 1))))
+   (layer TSLK
+    (graphic
+     (stroke 0.2)
+     (path
+      (closed true)
+      (pt -0.075 1)
+      (pt 0.075 1)
+      (pt 0.075 -1)
+      (pt -0.075 -1)
+      (pt -0.075 1))))
+   (layer TSLK
+    (graphic
+     (stroke 0.2)
+     (path
+      (closed false)
+      (pt -1.475 1.2)
+      (pt -0.425 1.2))))
+   (leg 1 (pt -0.95 0.65) (padstack 0))
+   (leg 2 (pt -0.95 0) (padstack 0))
+   (leg 3 (pt -0.95 -0.65) (padstack 0))
+   (leg 4 (pt 0.95 -0.65) (padstack 0))
+   (leg 5 (pt 0.95 0) (padstack 0))
+   (leg 6 (pt 0.95 0.65) (padstack 0))
+   (padstack 0
+    (plated false)
+    (pad (layer TCOP) (rectf 0.4 1.05 0 0 0))
+   )
+   (model "BC847BDW1T1G.stp"
+    (euler 0 0 0)
+    (offset 0 0 0)
+   )
+  )
+ )
+)

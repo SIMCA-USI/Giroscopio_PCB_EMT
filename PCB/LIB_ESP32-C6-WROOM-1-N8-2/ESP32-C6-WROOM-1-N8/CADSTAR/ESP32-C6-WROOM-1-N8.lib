@@ -1,0 +1,16 @@
+.ESP32-C6-WROOM-1-N8 :1 ;802.15.4, Bluetooth, WiFi Bluetooth v5.0, Zigbee Transceiver Module 2.4GHz PCB Trace Surface Mount
+ESP32C6WROOM1N8
+*STM IC
+*NGS
+*PLB 1="GND_1" 2="3V3" 3="EN" 4="IO4" 5="IO5" 6="IO6" 7="IO7" 8="IO0" 9="IO1" 10="IO8" 11="IO10" 12="IO11" 13="IO12" 14="IO13" 15="IO9" 16="IO18" 17="IO19" 18="IO20" 19="IO21" 20="IO22" 21="IO23" 22="NC" 23="IO15" 24="RXD0" 25="TXD0" 26="IO3" 27="IO2" 28="GND_2" 29="GND_3" 30="GND_4" 31="GND_5" 32="GND_6" 33="GND_7" 34="GND_8" 35="GND_9" 36="GND_10" 37="GND_11"
+*MXP 37
+*DFN ESP32-C6-WROOM-1-N8
+~!Mouser Part Number (356-ESP32C6WROOM1N8)
+~!Link Mouser Price/Stock (https://www.mouser.co.uk/ProductDetail/Espressif-Systems/ESP32-C6-WROOM-1-N8?qs=8Wlm6%252BaMh8ST02Gmwp74cw%3D%3D)
+~!Manufacturer_Name (Espressif Systems)
+~!Manufacturer_Part_Number (ESP32-C6-WROOM-1-N8)
+~!Link Datasheet (https://www.espressif.com/sites/default/files/documentation/esp32-c6-wroom-1_datasheet_en.pdf)
+~!Height (3.25mm)
+~!3D_Model (ESP32-C6-WROOM-1-N8)
+ESP32-C6-WROOM-1-N8
+1.1!U 2.1!U 3.1!U 4.1!U 5.1!U 6.1!U 7.1!U 8.1!U 9.1!U 10.1!U 11.1!U 12.1!U 13.1!U 14.1!U 15.1!U 16.1!U 17.1!U 18.1!U 19.1!U 20.1!U 21.1!U 22.1!U 23.1!U 24.1!U 25.1!U 26.1!U 27.1!U 28.1!U 29.1!U 30.1!U 31.1!U 32.1!U 33.1!U 34.1!U 35.1!U 36.1!U 37.1!U 

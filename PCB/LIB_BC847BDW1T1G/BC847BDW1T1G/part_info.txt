@@ -1,0 +1,9 @@
+Manufacturer=onsemi
+PartNumber=BC847BDW1T1G
+PartCategory=Integrated Circuit
+PackageCategory=SOT23 (6-Pin)
+PinCount=6
+Version=3.1
+Released=2015-07-24 09:06:40
+Downloaded=2025-07-09 12:00:59
+3D=Y
