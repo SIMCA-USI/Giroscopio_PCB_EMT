@@ -1,5 +1,5 @@
-#include <Wire.h>
 #include <Arduino.h>
+#include <Wire.h>
 #include "I2Cdev.h"
 #include "MPU6050.h"
 
@@ -8,14 +8,17 @@
 #define SDA_PIN 21
 #define SCL_PIN 22
 
-const int mpuAddress = 0x69;  // PRUEBA PRIMERO 0x69
+const int mpuAddress = 0x69;  // AD0 en HIGH
 
 MPU6050 mpu(mpuAddress);
 
+// Variables globales de lectura cruda
 int16_t ax, ay, az;
 int16_t gx, gy, gz;
-float ax_off, ay_off, az_off;
-float gx_off, gy_off, gz_off;
+
+// Offsets (en cuentas crudas)
+float ax_off = 0, ay_off = 0, az_off = 0;
+float gx_off = 0, gy_off = 0, gz_off = 0;
 
 void calibrateMPU() {
   const int N = 1000;
@@ -25,8 +28,8 @@ void calibrateMPU() {
   Serial.println(F("Calibrando... NO muevas la placa"));
 
   for (int i = 0; i < N; i++) {
-    mpu.getAcceleration(&ax, &ay, &az);
-    mpu.getRotation(&gx, &gy, &gz);
+    // Leemos las 6 magnitudes de golpe
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
 
     ax_sum += ax;
     ay_sum += ay;
@@ -35,7 +38,7 @@ void calibrateMPU() {
     gy_sum += gy;
     gz_sum += gz;
 
-    delay(2);
+    delay(2);  // pequeño retardo
   }
 
   float ax_mean = ax_sum / (float)N;
@@ -45,38 +48,21 @@ void calibrateMPU() {
   float gy_mean = gy_sum / (float)N;
   float gz_mean = gz_sum / (float)N;
 
-  const float ACC_SCALE = 16384.0; // ±2g
-
-  // Queremos que en reposo: ax≈0, ay≈0, az≈+1g
-  ax_off = ax_mean;               // para restarlo luego → 0g
+  // Queremos que en reposo todos los ejes den 0 (quitamos también la gravedad)
+  ax_off = ax_mean;
   ay_off = ay_mean;
-  az_off = az_mean - ACC_SCALE;   // ajusta para que Z quede en 1g
-
-  // Gyro: queremos todo a 0
+  az_off = az_mean;   // <-- antes era az_mean - ACC_SCALE (dejaba 1g)
   gx_off = gx_mean;
   gy_off = gy_mean;
   gz_off = gz_mean;
 
-  Serial.println(F("Calibración terminada:"));
+  Serial.println(F("Calibración terminada (offsets crudos):"));
   Serial.print(F("ax_off=")); Serial.print(ax_off);
   Serial.print(F(" ay_off=")); Serial.print(ay_off);
   Serial.print(F(" az_off=")); Serial.println(az_off);
   Serial.print(F("gx_off=")); Serial.print(gx_off);
   Serial.print(F(" gy_off=")); Serial.print(gy_off);
   Serial.print(F(" gz_off=")); Serial.println(gz_off);
-}
-
-void printTab() { Serial.print('\t'); }
-
-void printRAW() {
-  Serial.print(F("a[x y z] g[x y z]:"));
-  printTab();
-  Serial.print(ax); printTab();
-  Serial.print(ay); printTab();
-  Serial.print(az); printTab();
-  Serial.print(gx); printTab();
-  Serial.print(gy); printTab();
-  Serial.println(gz);
 }
 
 void setup() {
@@ -106,44 +92,42 @@ void setup() {
     Serial.println(F("Error al iniciar IMU (testConnection = false)"));
   }
 
-  // Aquí podrías llamar a calibrateMPU(); si usas la función de calibración
+  // Muy importante: calibrar con la placa quieta
+  calibrateMPU();
 }
 
-
 void loop() {
-  mpu.getAcceleration(&ax, &ay, &az);
-  mpu.getRotation(&gx, &gy, &gz);
+  // Leemos las 6 magnitudes crudas
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
   static uint32_t t0 = millis();
   uint32_t t_ms = millis() - t0;
 
-  int16_t ax, ay, az, gx, gy, gz;
-  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  // Aplica offsets (crudos)
+  float ax_corr = ax - ax_off;
+  float ay_corr = ay - ay_off;
+  float az_corr = az - az_off;
 
-  // Aplica offsets
-  float ax_corr = (ax - ax_off);
-  float ay_corr = (ay - ay_off);
-  float az_corr = (az - az_off);
+  float gx_corr = gx - gx_off;
+  float gy_corr = gy - gy_off;
+  float gz_corr = gz - gz_off;
 
-  float gx_corr = (gx - gx_off);
-  float gy_corr = (gy - gy_off);
-  float gz_corr = (gz - gz_off);
+  const float ACC_SCALE  = 16384.0f; // LSB/g (±2g)
+  const float GYRO_SCALE = 131.0f;   // LSB/(°/s) (±250 dps)
 
-  const float ACC_SCALE = 16384.0;  // LSB/g
-  const float GYRO_SCALE = 131.0;   // LSB/(°/s)
-
-  float ax_g = ax_corr / ACC_SCALE;
-  float ay_g = ay_corr / ACC_SCALE;
-  float az_g = az_corr / ACC_SCALE;
+  // Pasa a unidades físicas
+  float ax_g   = ax_corr / ACC_SCALE;
+  float ay_g   = ay_corr / ACC_SCALE;
+  float az_g   = az_corr / ACC_SCALE;
 
   float gx_dps = gx_corr / GYRO_SCALE;
   float gy_dps = gy_corr / GYRO_SCALE;
   float gz_dps = gz_corr / GYRO_SCALE;
 
-  Serial.print("Ubicacion: ");
-  Serial.print('\t');
+  // ---- Salida para debug ----
+  Serial.print(F("Ubicacion:\t"));
   Serial.print(UBICACION);
-  Serial.print('\t');
-
+  Serial.print('\n');
 
   Serial.print(F("Accel[g]: "));
   Serial.print(ax_g); Serial.print('\t');
@@ -155,6 +139,7 @@ void loop() {
   Serial.print(gy_dps); Serial.print('\t');
   Serial.println(gz_dps);
 
+  // ---- Línea CSV cruda para Python ----
   // Formato CSV: t_ms,ax,ay,az,gx,gy,gz
   Serial.print(t_ms); Serial.print(",");
   Serial.print(ax);   Serial.print(",");
@@ -164,6 +149,5 @@ void loop() {
   Serial.print(gy);   Serial.print(",");
   Serial.println(gz);
 
-  delay(100);
+  delay(10);  // ~100 Hz
 }
-
