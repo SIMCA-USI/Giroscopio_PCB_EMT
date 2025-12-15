@@ -6,24 +6,19 @@ from collections import deque
 
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+from matplotlib.widgets import Button
 
 # ========= CONFIGURACIÓN =========
 
 # Puerto serie de la ESP32
-SERIAL_PORT = "/dev/ttyACM0"   # En Windows sería algo tipo "COM3"
+SERIAL_PORT = "/dev/ttyACM1"   # En Windows sería algo tipo "COM3"
 BAUDRATE = 115200
 
 # Carpeta donde se guardarán CSV y gráfica
-OUTPUT_DIR = "/home/adrian/Giroscopio_PCB_EMT/Resultados"  # CAMBIA ESTO SI QUIERES
+OUTPUT_DIR = "/home/adrian/Giroscopio_PCB_EMT/Resultados"
 
 # Nombre base de los ficheros (sin extensión)
-BASE_NAME = "prueba_vibraciones1"  # CAMBIA ESTO PARA CADA ENSAYO
-
-# Cuántas muestras usamos para calibrar con la placa en reposo
-CALIBRATION_SAMPLES = 500   # ~5 s si vas a 100 Hz
-
-# Umbral para considerar que es “cero” (en cuentas crudas)
-NOISE_THRESHOLD = 100
+BASE_NAME = "prueba_vibraciones1"
 
 # Ventana de tiempo para la gráfica (segundos)
 WINDOW_SECONDS = 60
@@ -32,7 +27,53 @@ WINDOW_SECONDS = 60
 SAMPLE_HZ = 100
 MAX_POINTS = WINDOW_SECONDS * SAMPLE_HZ
 
+# Límite vertical opcional para la aceleración (en m/s²).
+# Si es None, se autoescala según los datos.
+ACC_LIMIT_MS2 = None
+
+# Conversión de crudo a g (tiene que coincidir con el rango de la MPU6050 en la ESP32)
+ACC_SCALE = 4096.0  # LSB/g (±8 g)
+
+# Constante de gravedad
+G_CONST = 9.80665    # m/s² por 1 g
+
+# Escala del giroscopio (si quieres guardarlo en dps)
+GYRO_SCALE = 131.0   # LSB / (°/s) para ±250 dps
+
 # ========= FIN CONFIGURACIÓN =========
+
+
+def detectar_ubicacion(ser, timeout_s=5.0):
+    """
+    Lee del puerto serie durante unos segundos buscando una línea que
+    empiece por 'Ubicacion:'. Devuelve el texto de la ubicación o
+    'Desconocida' si no lo encuentra.
+    """
+    print("Buscando línea de 'Ubicacion:' en el puerto serie...")
+    inicio = time.time()
+    ubicacion = "Desconocida"
+
+    while time.time() - inicio < timeout_s:
+        line_bytes = ser.readline()
+        if not line_bytes:
+            continue
+        try:
+            line_str = line_bytes.decode("utf-8", errors="ignore").strip()
+        except Exception:
+            continue
+
+        if line_str.startswith("Ubicacion:"):
+            # Ejemplo: "Ubicacion: \tAsiento\tAccel[g]: 0.0 ..."
+            try:
+                pos = line_str.find(":")
+                resto = line_str[pos + 1:].strip()  # "Asiento\tAccel[g]: ..."
+                ubicacion = resto.split("\t")[0].strip()
+                print(f"Ubicación detectada en serie: '{ubicacion}'")
+                break
+            except Exception:
+                pass
+
+    return ubicacion
 
 
 def main():
@@ -44,6 +85,7 @@ def main():
     print(f"CSV:   {csv_path}")
     print(f"Plot:  {plot_path}")
 
+    # Abrir puerto serie
     print(f"Abrriendo puerto serie {SERIAL_PORT} a {BAUDRATE} baudios...")
     try:
         ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1)
@@ -51,8 +93,13 @@ def main():
         print(f"Error al abrir el puerto serie: {e}")
         return
 
-    time.sleep(2)
+    time.sleep(2)  # por si la ESP32 se resetea
 
+    # Detectar ubicación leyendo las primeras líneas
+    ubicacion = detectar_ubicacion(ser)
+    print(f"Ubicación usada: {ubicacion}")
+
+    # Abrir archivo CSV (sobrescribe si existe)
     try:
         csvfile = open(csv_path, "w", newline="")
     except Exception as e:
@@ -61,119 +108,138 @@ def main():
         return
 
     csv_writer = csv.writer(csvfile)
-    # añadimos columnas corregidas ax_c, ay_c, az_c
-    csv_writer.writerow(["t_ms", "ax", "ay", "az", "gx", "gy", "gz",
-                         "ax_c", "ay_c", "az_c"])
+    # columnas: ubicacion + datos EN m/s² + giroscopio en dps
+    csv_writer.writerow([
+        "ubicacion", "t_ms",
+        "ax_ms2", "ay_ms2", "az_ms2",
+        "gx_dps", "gy_dps", "gz_dps"
+    ])
     print(f"Guardando datos en {csv_path}")
 
-    # Buffers para gráfica (valores corregidos)
+    # Buffers para gráfica (últimos N puntos, valores en m/s²)
     t_buf = deque(maxlen=MAX_POINTS)
     ax_buf = deque(maxlen=MAX_POINTS)
     ay_buf = deque(maxlen=MAX_POINTS)
     az_buf = deque(maxlen=MAX_POINTS)
 
     # FIGURA CON 4 SUBPLOTS
-    fig, ((ax_all, ax_x), (ax_y, ax_z)) = plt.subplots(2, 2, sharex="col", figsize=(10, 6))
+    fig, ((ax_all, ax_x), (ax_y, ax_z)) = plt.subplots(
+        2, 2, sharex="col", figsize=(10, 6)
+    )
+
+    # Hueco abajo para el botón
+    plt.subplots_adjust(bottom=0.18)
 
     line_all_x, = ax_all.plot([], [], label="ax", color="r")
     line_all_y, = ax_all.plot([], [], label="ay", color="g")
     line_all_z, = ax_all.plot([], [], label="az", color="b")
-    ax_all.set_ylabel("Accel (raw)")
+    ax_all.set_ylabel("Aceleración [m/s²]")
     ax_all.set_title("Aceleración XYZ")
     ax_all.legend(loc="upper right")
 
     line_x, = ax_x.plot([], [], color="r")
     ax_x.set_title("Eje X")
-    ax_x.set_ylabel("ax (raw)")
+    ax_x.set_ylabel("ax [m/s²]")
 
     line_y, = ax_y.plot([], [], color="g")
     ax_y.set_title("Eje Y")
-    ax_y.set_ylabel("ay (raw)")
+    ax_y.set_ylabel("ay [m/s²]")
 
     line_z, = ax_z.plot([], [], color="b")
     ax_z.set_title("Eje Z")
-    ax_z.set_ylabel("az (raw)")
+    ax_z.set_ylabel("az [m/s²]")
 
     ax_z.set_xlabel("Tiempo (s)")
     ax_y.set_xlabel("Tiempo (s)")
 
-    fig.suptitle("MPU6050 en tiempo real (filtrado / centrado)")
+    # Título general con la ubicación
+    fig.suptitle(f"MPU6050 en tiempo real - {ubicacion}")
+
+    # Título de la ventana (si el backend lo permite)
+    try:
+        fig.canvas.manager.set_window_title(f"MPU6050 - {ubicacion}")
+    except Exception:
+        pass
+
+    # ---- Botón para detener ----
+    ax_button = plt.axes([0.42, 0.04, 0.16, 0.06])  # [left, bottom, width, height]
+    btn_stop = Button(ax_button, "Detener", hovercolor="0.8")
+
+    def on_stop(event):
+        print("Botón 'Detener' pulsado. Cerrando ventana...")
+        plt.close(fig)
+
+    btn_stop.on_clicked(on_stop)
 
     start_time_s = None
 
-    # ---- variables para calibración ----
-    calib_count = 0
-    sum_ax = sum_ay = sum_az = 0.0
-    offset_ax = offset_ay = offset_az = 0.0
-    calibrating = True
-
-    print(f"Calibrando... mantén la PCB quieta durante {CALIBRATION_SAMPLES / SAMPLE_HZ:.1f} s")
-
     def update(frame):
-        nonlocal start_time_s, calib_count, sum_ax, sum_ay, sum_az
-        nonlocal offset_ax, offset_ay, offset_az, calibrating
+        nonlocal start_time_s
 
+        # Leer todas las líneas disponibles
         while ser.in_waiting:
             try:
                 line_bytes = ser.readline()
+                if not line_bytes:
+                    continue
                 line_str = line_bytes.decode("utf-8", errors="ignore").strip()
                 if not line_str:
                     continue
 
+                # Esperamos: t_ms, ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw
                 parts = line_str.split(",")
-                if len(parts) != 7:
+                if len(parts) < 7:
                     continue
 
-                t_ms, ax_v, ay_v, az_v, gx_v, gy_v, gz_v = map(float, parts)
+                try:
+                    t_ms, ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw = map(
+                        float, parts[:7]
+                    )
+                except ValueError:
+                    continue
 
-                # ---- CALIBRACIÓN ----
-                if calibrating:
-                    sum_ax += ax_v
-                    sum_ay += ay_v
-                    sum_az += az_v
-                    calib_count += 1
+                # --- conversión a unidades físicas ---
 
-                    if calib_count >= CALIBRATION_SAMPLES:
-                        offset_ax = sum_ax / calib_count
-                        offset_ay = sum_ay / calib_count
-                        offset_az = sum_az / calib_count
-                        calibrating = False
-                        print("Calibración completada.")
-                        print(f"Offsets -> ax: {offset_ax:.1f}, ay: {offset_ay:.1f}, az: {offset_az:.1f}")
-                # aplicar corrección (aunque estemos calibrando, así ves cómo evoluciona)
-                ax_c = ax_v - offset_ax
-                ay_c = ay_v - offset_ay
-                az_c = az_v - offset_az
+                # de cuentas → g
+                ax_g = ax_raw / ACC_SCALE
+                ay_g = ay_raw / ACC_SCALE
+                az_g = az_raw / ACC_SCALE
 
-                # Umbral de ruido alrededor de 0
-                if abs(ax_c) < NOISE_THRESHOLD:
-                    ax_c = 0.0
-                if abs(ay_c) < NOISE_THRESHOLD:
-                    ay_c = 0.0
-                if abs(az_c) < NOISE_THRESHOLD:
-                    az_c = 0.0
+                # de g → m/s²
+                ax_ms2 = ax_g * G_CONST
+                ay_ms2 = ay_g * G_CONST
+                az_ms2 = az_g * G_CONST
 
-                # ---- tiempo relativo ----
+                # giroscopio: de cuentas → dps
+                gx_dps = gx_raw / GYRO_SCALE
+                gy_dps = gy_raw / GYRO_SCALE
+                gz_dps = gz_raw / GYRO_SCALE
+
+                # Tiempo en segundos relativo al inicio
                 if start_time_s is None:
                     start_time_s = t_ms / 1000.0
                 t_s = t_ms / 1000.0 - start_time_s
 
-                # Guardar en buffers (corregidos)
+                # Guardar en buffers para gráfica (m/s²)
                 t_buf.append(t_s)
-                ax_buf.append(ax_c)
-                ay_buf.append(ay_c)
-                az_buf.append(az_c)
+                ax_buf.append(ax_ms2)
+                ay_buf.append(ay_ms2)
+                az_buf.append(az_ms2)
 
-                # Guardar TODO en CSV: crudo + corregido
-                csv_writer.writerow([t_ms, ax_v, ay_v, az_v, gx_v, gy_v, gz_v,
-                                     ax_c, ay_c, az_c])
+                # Guardar en CSV (m/s² + dps)
+                csv_writer.writerow([
+                    ubicacion, t_ms,
+                    ax_ms2, ay_ms2, az_ms2,
+                    gx_dps, gy_dps, gz_dps
+                ])
                 csvfile.flush()
 
             except Exception:
                 continue
 
         if not t_buf:
-            return (line_all_x, line_all_y, line_all_z, line_x, line_y, line_z)
+            return (line_all_x, line_all_y, line_all_z,
+                    line_x, line_y, line_z)
 
         # Actualizar líneas
         line_all_x.set_data(t_buf, ax_buf)
@@ -184,41 +250,38 @@ def main():
         line_y.set_data(t_buf, ay_buf)
         line_z.set_data(t_buf, az_buf)
 
-        # Ventana de tiempo común
+        # Ventana de tiempo común en el eje horizontal
         t_max = t_buf[-1]
         t_min = max(0, t_max - WINDOW_SECONDS)
         for axis in (ax_all, ax_x, ax_y, ax_z):
             axis.set_xlim(t_min, t_max)
 
-        # Y general
-        ymin_all = min(min(ax_buf), min(ay_buf), min(az_buf))
-        ymax_all = max(max(ax_buf), max(ay_buf), max(az_buf))
-        if ymin_all == ymax_all:
-            ymin_all -= 1
-            ymax_all += 1
-        margen_all = 0.1 * (ymax_all - ymin_all)
-        ax_all.set_ylim(ymin_all - margen_all, ymax_all + margen_all)
-
-        # Y individuales
-        def set_ylim_from_buffer(axis, buf):
-            ymin = min(buf)
-            ymax = max(buf)
+        # ---- Rango vertical común para los 3 ejes X, Y y Z ----
+        if ACC_LIMIT_MS2 is not None:
+            ymin = -ACC_LIMIT_MS2
+            ymax = ACC_LIMIT_MS2
+        else:
+            # Rango dinámico según TODOS los ejes (X, Y, Z)
+            all_vals = list(ax_buf) + list(ay_buf) + list(az_buf)
+            ymin = min(all_vals)
+            ymax = max(all_vals)
             if ymin == ymax:
-                ymin -= 1
-                ymax += 1
+                ymin -= 1e-3
+                ymax += 1e-3
             margen = 0.1 * (ymax - ymin)
-            axis.set_ylim(ymin - margen, ymax + margen)
+            ymin -= margen
+            ymax += margen
 
-        set_ylim_from_buffer(ax_x, ax_buf)
-        set_ylim_from_buffer(ax_y, ay_buf)
-        set_ylim_from_buffer(ax_z, az_buf)
+        # Aplicar el mismo rango vertical a todas las gráficas
+        for axis in (ax_all, ax_x, ax_y, ax_z):
+            axis.set_ylim(ymin, ymax)
 
-        return (line_all_x, line_all_y, line_all_z, line_x, line_y, line_z)
+        return (line_all_x, line_all_y, line_all_z,
+                line_x, line_y, line_z)
 
     ani = animation.FuncAnimation(fig, update, interval=100)
 
     try:
-        plt.tight_layout()
         plt.show()
     finally:
         print("Guardando imagen de la gráfica...")

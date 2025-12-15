@@ -80,8 +80,8 @@ void setup() {
   Serial.println(F("Iniciando MPU6050..."));
   mpu.initialize();
 
-  // Acelerómetro ±2g
-  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
+  // Acelerómetro ±8g
+  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_8);
 
   // Giroscopio ±250 °/s
   mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
@@ -112,7 +112,7 @@ void loop() {
   float gy_corr = gy - gy_off;
   float gz_corr = gz - gz_off;
 
-  const float ACC_SCALE  = 16384.0f; // LSB/g (±2g)
+  const float ACC_SCALE  = 4096.0f; // LSB/g (±8g)
   const float GYRO_SCALE = 131.0f;   // LSB/(°/s) (±250 dps)
 
   // Pasa a unidades físicas
@@ -139,15 +139,15 @@ void loop() {
   Serial.print(gy_dps); Serial.print('\t');
   Serial.println(gz_dps);
 
-  // ---- Línea CSV cruda para Python ----
-  // Formato CSV: t_ms,ax,ay,az,gx,gy,gz
-  Serial.print(t_ms); Serial.print(",");
-  Serial.print(ax);   Serial.print(",");
-  Serial.print(ay);   Serial.print(",");
-  Serial.print(az);   Serial.print(",");
-  Serial.print(gx);   Serial.print(",");
-  Serial.print(gy);   Serial.print(",");
-  Serial.println(gz);
+  // ---- Línea CSV CORREGIDA para Python ----
+  // Formato CSV: t_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps
+  Serial.print(t_ms);   Serial.print(",");
+  Serial.print(ax_g);   Serial.print(",");
+  Serial.print(ay_g);   Serial.print(",");
+  Serial.print(az_g);   Serial.print(",");
+  Serial.print(gx_dps); Serial.print(",");
+  Serial.print(gy_dps); Serial.print(",");
+  Serial.println(gz_dps);
 
   delay(10);  // ~100 Hz
 }
