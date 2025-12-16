@@ -3,7 +3,7 @@
 #include "I2Cdev.h"
 #include "MPU6050.h"
 
-#define UBICACION "Asiento"
+#define UBICACION "Suelo"
 
 #define SDA_PIN 21
 #define SCL_PIN 22
