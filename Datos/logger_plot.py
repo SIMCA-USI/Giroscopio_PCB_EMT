@@ -11,7 +11,7 @@ from matplotlib.widgets import Button
 # ========= CONFIGURACIÓN =========
 
 # Puerto serie de la ESP32
-SERIAL_PORT = "/dev/ttyACM1"   # En Windows sería algo tipo "COM3"
+SERIAL_PORT = "/dev/ttyACM0"   # En Windows sería algo tipo "COM3"
 BAUDRATE = 115200
 
 # Carpeta donde se guardarán CSV y gráfica
@@ -44,12 +44,6 @@ GYRO_SCALE = 131.0   # LSB / (°/s) para ±250 dps
 
 
 def detectar_ubicacion(ser, timeout_s=5.0):
-    """
-    Lee del puerto serie durante unos segundos buscando una línea que
-    empiece por 'Ubicacion:'. Devuelve el texto de la ubicación o
-    'Desconocida' si no lo encuentra.
-    """
-    print("Buscando línea de 'Ubicacion:' en el puerto serie...")
     inicio = time.time()
     ubicacion = "Desconocida"
 
@@ -63,7 +57,6 @@ def detectar_ubicacion(ser, timeout_s=5.0):
             continue
 
         if line_str.startswith("Ubicacion:"):
-            # Ejemplo: "Ubicacion: \tAsiento\tAccel[g]: 0.0 ..."
             try:
                 pos = line_str.find(":")
                 resto = line_str[pos + 1:].strip()  # "Asiento\tAccel[g]: ..."
@@ -93,7 +86,7 @@ def main():
         print(f"Error al abrir el puerto serie: {e}")
         return
 
-    time.sleep(2)  # por si la ESP32 se resetea
+    time.sleep(2)
 
     # Detectar ubicación leyendo las primeras líneas
     ubicacion = detectar_ubicacion(ser)
@@ -108,9 +101,9 @@ def main():
         return
 
     csv_writer = csv.writer(csvfile)
-    # columnas: ubicacion + datos EN m/s² + giroscopio en dps
+    # columnas: ubicacion + t_ms + timestamp PC + datos EN m/s² + giroscopio en dps
     csv_writer.writerow([
-        "ubicacion", "t_ms",
+        "ubicacion", "t_ms", "pc_time_s",
         "ax_ms2", "ay_ms2", "az_ms2",
         "gx_dps", "gy_dps", "gz_dps"
     ])
@@ -198,6 +191,9 @@ def main():
                 except ValueError:
                     continue
 
+                # Timestamp del PC en segundos (UNIX time)
+                pc_time = time.time()
+
                 # --- conversión a unidades físicas ---
 
                 # de cuentas → g
@@ -215,7 +211,7 @@ def main():
                 gy_dps = gy_raw / GYRO_SCALE
                 gz_dps = gz_raw / GYRO_SCALE
 
-                # Tiempo en segundos relativo al inicio
+                # Tiempo en segundos relativo al inicio (basado en t_ms)
                 if start_time_s is None:
                     start_time_s = t_ms / 1000.0
                 t_s = t_ms / 1000.0 - start_time_s
@@ -226,9 +222,9 @@ def main():
                 ay_buf.append(ay_ms2)
                 az_buf.append(az_ms2)
 
-                # Guardar en CSV (m/s² + dps)
+                # Guardar en CSV (m/s² + dps + timestamp PC)
                 csv_writer.writerow([
-                    ubicacion, t_ms,
+                    ubicacion, t_ms, pc_time,
                     ax_ms2, ay_ms2, az_ms2,
                     gx_dps, gy_dps, gz_dps
                 ])
@@ -261,7 +257,7 @@ def main():
             ymin = -ACC_LIMIT_MS2
             ymax = ACC_LIMIT_MS2
         else:
-            # Rango dinámico según TODOS los ejes (X, Y, Z)
+            
             all_vals = list(ax_buf) + list(ay_buf) + list(az_buf)
             ymin = min(all_vals)
             ymax = max(all_vals)
