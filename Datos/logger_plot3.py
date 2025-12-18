@@ -24,7 +24,7 @@ GPS_DETECT_TIMEOUT_S = 4.0
 GPS_STARTUP_SLEEP_S = 1.0
 
 OUTPUT_DIR = "/home/adrian/Giroscopio_PCB_EMT/Resultados"
-BASE_NAME = "prueba_vibraciones3"
+BASE_NAME = "prueba_vibracionesJueves18"
 
 WINDOW_SECONDS = 60
 SAMPLE_HZ = 100
@@ -144,7 +144,6 @@ def parse_nmea_sentence(line: str):
 
     # RMC
     if msg.endswith("RMC") and len(parts) >= 7:
-        # $..RMC, time, status, lat, N/S, lon, E/W, ...
         status = parts[2] if len(parts) > 2 else ""
         lat = _nmea_to_decimal(parts[3], parts[4], is_lat=True) if len(parts) > 4 else None
         lon = _nmea_to_decimal(parts[5], parts[6], is_lat=False) if len(parts) > 6 else None
@@ -157,7 +156,6 @@ def parse_nmea_sentence(line: str):
 
     # GGA
     if msg.endswith("GGA") and len(parts) >= 10:
-        # $..GGA, time, lat, N/S, lon, E/W, fixQ, sats, hdop, alt, M, ...
         lat = _nmea_to_decimal(parts[2], parts[3], is_lat=True) if len(parts) > 3 else None
         lon = _nmea_to_decimal(parts[4], parts[5], is_lat=False) if len(parts) > 5 else None
 
@@ -213,7 +211,7 @@ class GPSManager:
 
         # Estado GPS
         self.seq = 0
-        self.last_update_pc_time = None  # time.time() cuando llega update válido
+        self.last_update_pc_time = None
 
         self.lat = None
         self.lon = None
@@ -222,12 +220,15 @@ class GPSManager:
         self.fix = None     # bool
         self.hdop = None
 
-        self.velocidad_kmh = None  # por Haversine
+        self.velocidad_kmh = None
 
-        # Para velocidad
+        # Para velocidad (punto anterior "emitido")
         self._prev_lat = None
         self._prev_lon = None
         self._prev_time = None
+
+        # Para preferir RMC y evitar doble-emisión con GGA
+        self._last_rmc_pc_time = None
 
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
@@ -258,11 +259,12 @@ class GPSManager:
 
     def _apply_update(self, update: dict, pc_time: float):
         """
-        - Siempre actualiza campos (alt/sats/hdop/fix/lat/lon si vienen).
-        - Solo "emite" una actualización (seq++, velocidad) cuando toca:
-            * Preferimos RMC con status=A
-            * Fallback: GGA con fix_q>0 si no hay RMC
-        - Evita duplicados GGA/RMC del mismo segundo.
+        Fix real:
+        - Evitar que una frase duplicada (GGA+RMC seguidas) pise la velocidad.
+        - Emitimos 1 update por ciclo:
+            * Preferimos RMC (status=A)
+            * GGA solo emite si no ha habido RMC reciente.
+        - Anti-duplicados basado SOLO en dt (no en distancia mal calculada).
         """
         lat = update.get("lat", None)
         lon = update.get("lon", None)
@@ -295,47 +297,35 @@ class GPSManager:
                 self.lon = lon
             self.fix = fix_val
 
-            # --------- decidir si esta frase "emite" update ----------
-            emit = False
+            # Requisitos mínimos
             if lat is None or lon is None:
                 return
             if fix_val is not True:
                 return
 
-            # Preferimos RMC como trigger principal
+            # Decidir si esta frase emite update
+            emit = False
             if update.get("type") == "RMC":
-                emit = True
-            # Fallback a GGA si no hay RMC (o si tu GPS no manda RMC)
+                # Solo RMC activa
+                if update.get("status", "") == "A":
+                    emit = True
+                    self._last_rmc_pc_time = pc_time
             elif update.get("type") == "GGA":
-                emit = True
+                # Solo si NO hemos visto RMC reciente (evita doble update por segundo)
+                if self._last_rmc_pc_time is None or (pc_time - self._last_rmc_pc_time) > 1.2:
+                    emit = True
 
             if not emit:
                 return
 
-            # Anti-duplicados (GGA+RMC seguidos, o misma posición)
-            MIN_DT = 0.4       # segundos
-            MIN_DIST = 0.5     # metros
-
+            # Anti-duplicados por tiempo (GGA y RMC pueden venir con dt muy pequeño)
+            MIN_DT = 0.35
             if self.last_update_pc_time is not None:
-                dt_emit = pc_time - self.last_update_pc_time
-                if dt_emit < MIN_DT:
-                    # Demasiado pronto: casi seguro es la "otra" frase del mismo segundo
+                if (pc_time - self.last_update_pc_time) < MIN_DT:
                     return
 
-                # Si además el punto casi no cambia, tampoco emitimos
-                try:
-                    d = haversine_m(self.lat, self.lon, lat, lon)
-                    if d < MIN_DIST:
-                        return
-                except Exception:
-                    pass
-
-            # --------- calcular velocidad vs punto anterior emitido ----------
-            if (
-                self._prev_lat is not None
-                and self._prev_lon is not None
-                and self._prev_time is not None
-            ):
+            # Calcular velocidad vs punto anterior emitido
+            if self._prev_lat is not None and self._prev_lon is not None and self._prev_time is not None:
                 dt = pc_time - self._prev_time
                 if dt > 0:
                     dist_m = haversine_m(self._prev_lat, self._prev_lon, lat, lon)
@@ -353,7 +343,6 @@ class GPSManager:
             self.seq += 1
 
     def _loop(self):
-        # Pequeño respiro inicial
         try:
             time.sleep(GPS_STARTUP_SLEEP_S)
             try:
@@ -369,9 +358,7 @@ class GPSManager:
                 if not line_bytes:
                     continue
                 line = line_bytes.decode("utf-8", errors="ignore").strip()
-                if not line:
-                    continue
-                if not line.startswith("$"):
+                if not line or not line.startswith("$"):
                     continue
 
                 parsed = parse_nmea_sentence(line)
@@ -388,11 +375,12 @@ class GPSManager:
 # ================= Sesión ESP32 =================
 
 class DeviceSession:
-    def __init__(self, ser: serial.Serial, ubicacion: str, gps_manager: GPSManager | None):
+    def __init__(self, ser: serial.Serial, ubicacion: str, gps_manager, stop_all_cb):
         self.ser = ser
         self.port = ser.port
         self.ubicacion = ubicacion
         self.gps_manager = gps_manager
+        self.stop_all_cb = stop_all_cb  # parar TODO
 
         self.ubicacion_safe = sanitize_filename_component(ubicacion)
         self.port_safe = sanitize_filename_component(os.path.basename(self.port))
@@ -419,14 +407,13 @@ class DeviceSession:
                 "gx_dps",
                 "gy_dps",
                 "gz_dps",
-                # GPS (solo se rellenan en la fila que "le toca")
                 "gps_lat",
                 "gps_lon",
                 "gps_alt_m",
                 "gps_sats",
                 "gps_fix",
                 "gps_hdop",
-                "velocidad",  # km/h (Haversine)
+                "velocidad",  # km/h
             ]
         )
         self.csvfile.flush()
@@ -445,7 +432,6 @@ class DeviceSession:
         self.stopped_lock = threading.Lock()
         self._stopped = False
 
-        # GPS para "solo en fila que toca"
         self.last_seen_gps_seq = 0
 
         self.fig = None
@@ -463,7 +449,7 @@ class DeviceSession:
         self.fig, ((ax_all, ax_x), (ax_y, ax_z)) = plt.subplots(
             2, 2, sharex="col", figsize=(10, 6)
         )
-        plt.subplots_adjust(bottom=0.18)
+        plt.subplots_adjust(bottom=0.12)
 
         self.ax_all, self.ax_x, self.ax_y, self.ax_z = ax_all, ax_x, ax_y, ax_z
 
@@ -489,7 +475,7 @@ class DeviceSession:
         ax_z.set_xlabel("Tiempo (s)")
         ax_y.set_xlabel("Tiempo (s)")
 
-        self.fig.suptitle(f"ESP32 ubicada en: {self.ubicacion},\n en el puerto: ({self.port})")
+        self.fig.suptitle(f"ESP32: {self.ubicacion}  |  Puerto: {self.port}")
 
         try:
             self.fig.canvas.manager.set_window_title(
@@ -498,25 +484,16 @@ class DeviceSession:
         except Exception:
             pass
 
-        # Panel texto GPS en tiempo real (en la figura)
+        # Panel GPS
         self.gps_text = self.fig.text(
             0.02, 0.02, "GPS: (no detectado)",
             fontsize=9, va="bottom", ha="left"
         )
 
-        ax_button = plt.axes([0.42, 0.04, 0.16, 0.06])
-        self.btn_stop = Button(ax_button, "Detener", hovercolor="0.8")
-
-        def on_stop(_event):
-            print(f"[{self.port}] Botón 'Detener' pulsado.")
-            self.stop()
-            plt.close(self.fig)
-
-        self.btn_stop.on_clicked(on_stop)
-
+        # Si el usuario cierra cualquier ventana -> parar TODO
         def on_close(_event):
-            print(f"[{self.port}] Ventana cerrada.")
-            self.stop()
+            print(f"[{self.port}] Ventana cerrada -> detener todo.")
+            self.stop_all_cb()
 
         self.fig.canvas.mpl_connect("close_event", on_close)
 
@@ -530,10 +507,7 @@ class DeviceSession:
                     continue
 
                 line_str = line_bytes.decode("utf-8", errors="ignore").strip()
-                if not line_str:
-                    continue
-
-                if line_str.startswith("Ubicacion:"):
+                if not line_str or line_str.startswith("Ubicacion:"):
                     continue
 
                 parts = line_str.split(",")
@@ -541,9 +515,7 @@ class DeviceSession:
                     continue
 
                 try:
-                    t_ms, ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw = map(
-                        float, parts[:7]
-                    )
+                    t_ms, ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw = map(float, parts[:7])
                 except ValueError:
                     continue
 
@@ -585,25 +557,20 @@ class DeviceSession:
         except Exception:
             pass
 
-        print(f"[{self.port}] Sesión detenida y recursos cerrados.")
+        print(f"[{self.port}] Sesión detenida.")
 
     def _format_gps_text(self):
         if not self.gps_manager:
             return "GPS: (no detectado)"
 
         s = self.gps_manager.get_snapshot()
-        lat = s["lat"]
-        lon = s["lon"]
-        alt = s["alt_m"]
-        sats = s["sats"]
-        fix = s["fix"]
-        hdop = s["hdop"]
+        lat, lon = s["lat"], s["lon"]
+        alt, sats = s["alt_m"], s["sats"]
+        fix, hdop = s["fix"], s["hdop"]
         vel = s["velocidad"]
         pc_t = s["pc_time"]
 
-        age = None
-        if pc_t is not None:
-            age = time.time() - pc_t
+        age = (time.time() - pc_t) if pc_t is not None else None
 
         def fmt(x, nd=6):
             if x is None:
@@ -613,13 +580,9 @@ class DeviceSession:
             except Exception:
                 return str(x)
 
-        fix_str = "-"
-        if fix is True:
-            fix_str = "OK"
-        elif fix is False:
-            fix_str = "NO"
+        fix_str = "OK" if fix is True else ("NO" if fix is False else "-")
 
-        txt = (
+        return (
             f"GPS:\n"
             f"  lat: {fmt(lat, 6)}\n"
             f"  lon: {fmt(lon, 6)}\n"
@@ -630,10 +593,9 @@ class DeviceSession:
             f"  velocidad(km/h): {fmt(vel, 2)}\n"
             f"  age(s): {fmt(age, 1)}"
         )
-        return txt
 
     def update(self, _frame):
-        # Actualizar panel GPS (independiente de si escribimos GPS en CSV)
+        # Actualizar HUD GPS
         try:
             if self.gps_text is not None:
                 self.gps_text.set_text(self._format_gps_text())
@@ -646,13 +608,9 @@ class DeviceSession:
             except queue.Empty:
                 break
 
-            ax_g = ax_raw / ACC_SCALE
-            ay_g = ay_raw / ACC_SCALE
-            az_g = az_raw / ACC_SCALE
-
-            ax_ms2 = ax_g * G_CONST
-            ay_ms2 = ay_g * G_CONST
-            az_ms2 = az_g * G_CONST
+            ax_ms2 = (ax_raw / ACC_SCALE) * G_CONST
+            ay_ms2 = (ay_raw / ACC_SCALE) * G_CONST
+            az_ms2 = (az_raw / ACC_SCALE) * G_CONST
 
             gx_dps = gx_raw / GYRO_SCALE
             gy_dps = gy_raw / GYRO_SCALE
@@ -671,16 +629,13 @@ class DeviceSession:
             self.ay_buf.append(ay_ms2)
             self.az_buf.append(az_ms2)
 
-            # --- GPS: solo en la fila que "le toque" ---
+            # GPS solo en la fila que "le toca"
             gps_lat = gps_lon = gps_alt = gps_sats = gps_fix = gps_hdop = velocidad = ""
             if self.gps_manager:
                 snap = self.gps_manager.get_snapshot()
                 seq = snap["seq"]
-
-                # Si hay nueva actualización GPS desde la última vez que escribimos GPS
                 if seq != self.last_seen_gps_seq and snap["lat"] is not None and snap["lon"] is not None:
                     self.last_seen_gps_seq = seq
-
                     gps_lat = snap["lat"]
                     gps_lon = snap["lon"]
                     gps_alt = snap["alt_m"] if snap["alt_m"] is not None else ""
@@ -691,23 +646,11 @@ class DeviceSession:
 
             self.csv_writer.writerow(
                 [
-                    self.ubicacion,
-                    t_ms,
-                    pc_time,
-                    tiempo_s,
-                    ax_ms2,
-                    ay_ms2,
-                    az_ms2,
-                    gx_dps,
-                    gy_dps,
-                    gz_dps,
-                    gps_lat,
-                    gps_lon,
-                    gps_alt,
-                    gps_sats,
-                    gps_fix,
-                    gps_hdop,
-                    velocidad,  # km/h
+                    self.ubicacion, t_ms, pc_time, tiempo_s,
+                    ax_ms2, ay_ms2, az_ms2,
+                    gx_dps, gy_dps, gz_dps,
+                    gps_lat, gps_lon, gps_alt, gps_sats, gps_fix, gps_hdop,
+                    velocidad
                 ]
             )
             self.csvfile.flush()
@@ -756,9 +699,6 @@ class DeviceSession:
 # ================= Descubrimiento dispositivos =================
 
 def _detect_gps_on_serial(dev: str) -> bool:
-    """
-    Abre el puerto a GPS_BAUDRATE y espera ver líneas NMEA ($....).
-    """
     try:
         ser = serial.Serial(dev, GPS_BAUDRATE, timeout=1)
     except Exception:
@@ -778,10 +718,8 @@ def _detect_gps_on_serial(dev: str) -> bool:
                 continue
             s = b.decode("utf-8", errors="ignore").strip()
             if s.startswith("$") and len(s) > 6:
-                # NMEA candidate
                 ser.close()
                 return True
-
     except Exception:
         pass
 
@@ -793,22 +731,11 @@ def _detect_gps_on_serial(dev: str) -> bool:
 
 
 def discover_esp32_devices_and_gps():
-    """
-    Devuelve:
-      - esp32_devices: lista (ser, ubicacion) SOLO para /dev/ttyACM* y /dev/ttyUSB*
-        y solo si emiten 'Ubicacion:' a 115200.
-      - gps_serial: serial.Serial del GPS si se detecta (NMEA), si no None
-    """
     esp32_devices = []
     gps_candidates = []
 
     all_ports = list(list_ports.comports())
-
-    ports = []
-    for p in all_ports:
-        dev = p.device or ""
-        if is_candidate_port(dev):
-            ports.append(p)
+    ports = [p for p in all_ports if is_candidate_port(p.device or "")]
 
     if not ports:
         print("No se han encontrado puertos /dev/ttyACM* ni /dev/ttyUSB*.")
@@ -828,7 +755,7 @@ def discover_esp32_devices_and_gps():
     for p in ports:
         dev = p.device
 
-        # 1) Intentar ESP32 a 115200 (Ubicacion:)
+        # 1) ESP32
         ser_esp = None
         try:
             ser_esp = serial.Serial(dev, BAUDRATE, timeout=1)
@@ -841,18 +768,17 @@ def discover_esp32_devices_and_gps():
             ubicacion = detectar_ubicacion(ser_esp, timeout_s=DETECT_TIMEOUT_S)
             if ubicacion != "Desconocida":
                 esp32_devices.append((ser_esp, ubicacion))
-                continue  # ya clasificado como ESP32
+                continue
         except Exception:
             pass
 
-        # Si no era ESP32, cerrar si estaba abierto
         try:
             if ser_esp is not None and ser_esp.is_open:
                 ser_esp.close()
         except Exception:
             pass
 
-        # 2) Probar si es GPS (NMEA) a GPS_BAUDRATE
+        # 2) GPS
         try:
             if _detect_gps_on_serial(dev):
                 gps_candidates.append(dev)
@@ -861,9 +787,8 @@ def discover_esp32_devices_and_gps():
 
     gps_serial = None
     if gps_candidates:
-        # Elegimos el primero (si hay más de uno, avisamos)
         if len(gps_candidates) > 1:
-            print("[GPS] Aviso: se han detectado varios candidatos GPS:", gps_candidates)
+            print("[GPS] Aviso: varios candidatos:", gps_candidates)
             print("[GPS] Se usará el primero:", gps_candidates[0])
 
         try:
@@ -872,19 +797,48 @@ def discover_esp32_devices_and_gps():
             print(f"[GPS] No se pudo abrir el GPS en {gps_candidates[0]}: {e}")
             gps_serial = None
     else:
-        print("[GPS] No se detectó ningún GPS (NMEA) en los puertos filtrados.")
+        print("[GPS] No se detectó ningún GPS (NMEA).")
 
     return esp32_devices, gps_serial
+
+
+def create_control_window(stop_all_cb):
+    fig = plt.figure(figsize=(4.0, 1.6))
+    try:
+        fig.canvas.manager.set_window_title("Control")
+    except Exception:
+        pass
+    fig.suptitle("Control general", fontsize=12)
+
+    ax_button = fig.add_axes([0.2, 0.25, 0.6, 0.5])
+    btn = Button(ax_button, "Detener TODO", hovercolor="0.8")
+
+    def on_stop(_event):
+        print("[CONTROL] Detener TODO pulsado.")
+        stop_all_cb()
+
+    btn.on_clicked(on_stop)
+
+    def on_close(_event):
+        print("[CONTROL] Ventana control cerrada -> detener todo.")
+        stop_all_cb()
+
+    fig.canvas.mpl_connect("close_event", on_close)
+
+    # 🔒 MUY IMPORTANTE: mantener referencias para que el botón sea clicable
+    fig._control_ax = ax_button
+    fig._control_btn = btn
+
+    return fig
+
 
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     found, gps_ser = discover_esp32_devices_and_gps()
-
     if not found:
         print("No se detectó ninguna ESP32 del proyecto (no apareció 'Ubicacion:').")
-        # Aun así cerramos GPS si se abrió
         if gps_ser:
             try:
                 gps_ser.close()
@@ -892,14 +846,42 @@ def main():
                 pass
         return
 
-    gps_manager = None
-    if gps_ser:
-        gps_manager = GPSManager(gps_ser)
+    gps_manager = GPSManager(gps_ser) if gps_ser else None
 
     sessions = []
+    stop_lock = threading.Lock()
+    stopped = {"done": False}
+
+    def stop_all():
+        with stop_lock:
+            if stopped["done"]:
+                return
+            stopped["done"] = True
+
+        for s in sessions:
+            try:
+                s.stop()
+            except Exception:
+                pass
+
+        if gps_manager:
+            try:
+                gps_manager.stop()
+            except Exception:
+                pass
+
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+
+    # Ventana de control con botón único
+    _control_fig = create_control_window(stop_all)
+
+    # Crear sesiones
     for ser, ubicacion in found:
         try:
-            sessions.append(DeviceSession(ser, ubicacion, gps_manager))
+            sessions.append(DeviceSession(ser, ubicacion, gps_manager, stop_all))
         except Exception as e:
             print(f"No se pudo crear sesión para {ser.port}: {e}")
             try:
@@ -909,17 +891,13 @@ def main():
 
     if not sessions:
         print("No se pudo iniciar ninguna sesión.")
-        if gps_manager:
-            gps_manager.stop()
+        stop_all()
         return
 
     try:
         plt.show()
     finally:
-        for s in sessions:
-            s.stop()
-        if gps_manager:
-            gps_manager.stop()
+        stop_all()
 
 
 if __name__ == "__main__":
