@@ -137,16 +137,16 @@ def main():
         w0 = min(DEFAULT_WINDOW_S, t_max)
         idx = _slice_by_time(ds.t, 0.0, w0)
 
-        l_ax, = ax_acc.plot(ds.t[idx], ds.ax[idx], label=f"{ds.name} | ax")
-        l_ay, = ax_acc.plot(ds.t[idx], ds.ay[idx], label=f"{ds.name} | ay")
-        l_az, = ax_acc.plot(ds.t[idx], ds.az[idx], label=f"{ds.name} | az")
+        l_ax, = ax_acc.plot(ds.t[idx], ds.ax[idx], label=f"{ds.name} | Eje X")
+        l_ay, = ax_acc.plot(ds.t[idx], ds.ay[idx], label=f"{ds.name} | Eje Y")
+        l_az, = ax_acc.plot(ds.t[idx], ds.az[idx], label=f"{ds.name} | Eje Z")
 
         tv = ds.t[idx]
         vv = ds.v[idx]
         m = np.isfinite(vv)
         l_v, = ax_vel.plot(tv[m], vv[m], "-o", label=f"{ds.name} | v", markersize=3)
 
-        lines[ds.name] = {"ax": l_ax, "ay": l_ay, "az": l_az, "v": l_v}
+        lines[ds.name] = {"Eje X": l_ax, "Eje Y": l_ay, "Eje Z": l_az, "v": l_v}
 
     ax_acc.legend(loc="upper left", fontsize=8)
     ax_vel.legend(loc="upper left", fontsize=8)
@@ -160,13 +160,13 @@ def main():
 
     # --------- CheckButtons señales ---------
     ax_checks = fig.add_axes([0.80, 0.55, 0.18, 0.25])
-    labels = ["ax", "ay", "az", "velocidad"]
+    labels = ["Eje X", "Eje Y", "Eje Z", "Velocidad"]
     actives = [True, True, True, True]
     checks = CheckButtons(ax_checks, labels, actives)
 
     # --------- Toggle auto-escala Y ---------
     ax_autoscale = fig.add_axes([0.80, 0.49, 0.18, 0.06])
-    autoscale_btn = CheckButtons(ax_autoscale, ["Auto-escala Y"], [True])
+    autoscale_btn = CheckButtons(ax_autoscale, ["Auto-escalado Eje Y"], [True])
     autoscale_enabled = {"on": True}
 
     # --------- Botones ---------
@@ -176,7 +176,7 @@ def main():
     ax_close = fig.add_axes([0.80, 0.30, 0.18, 0.07])
     btn_close = Button(ax_close, "Cerrar", hovercolor="0.85")
 
-    visible = {"ax": True, "ay": True, "az": True, "v": True}
+    visible = {"Eje X": True, "Eje Y": True, "Eje Z": True, "v": True}
 
     def auto_ylim(ax, arrays):
         vals = []
@@ -205,18 +205,18 @@ def main():
         for ds in datasets:
             idx = _slice_by_time(ds.t, t0, t1)
 
-            lines[ds.name]["ax"].set_data(ds.t[idx], ds.ax[idx])
-            lines[ds.name]["ay"].set_data(ds.t[idx], ds.ay[idx])
-            lines[ds.name]["az"].set_data(ds.t[idx], ds.az[idx])
+            lines[ds.name]["Eje X"].set_data(ds.t[idx], ds.ax[idx])
+            lines[ds.name]["Eje Y"].set_data(ds.t[idx], ds.ay[idx])
+            lines[ds.name]["Eje Z"].set_data(ds.t[idx], ds.az[idx])
 
             tv = ds.t[idx]
             vv = ds.v[idx]
             m = np.isfinite(vv)
             lines[ds.name]["v"].set_data(tv[m], vv[m])
 
-            lines[ds.name]["ax"].set_visible(visible["ax"])
-            lines[ds.name]["ay"].set_visible(visible["ay"])
-            lines[ds.name]["az"].set_visible(visible["az"])
+            lines[ds.name]["Eje X"].set_visible(visible["Eje X"])
+            lines[ds.name]["Eje Y"].set_visible(visible["Eje Y"])
+            lines[ds.name]["Eje Z"].set_visible(visible["Eje Z"])
             lines[ds.name]["v"].set_visible(visible["v"])
 
         ax_acc.set_xlim(t0, t1)
@@ -227,11 +227,11 @@ def main():
             acc_arrays = []
             for ds in datasets:
                 idx = _slice_by_time(ds.t, t0, t1)
-                if visible["ax"]:
+                if visible["Eje X"]:
                     acc_arrays.append(ds.ax[idx])
-                if visible["ay"]:
+                if visible["Eje Y"]:
                     acc_arrays.append(ds.ay[idx])
-                if visible["az"]:
+                if visible["Eje Z"]:
                     acc_arrays.append(ds.az[idx])
             auto_ylim(ax_acc, acc_arrays)
 
@@ -247,7 +247,7 @@ def main():
         fig.canvas.draw_idle()
 
     def on_check(label):
-        if label == "velocidad":
+        if label == "Velocidad":
             visible["v"] = not visible["v"]
         else:
             visible[label] = not visible[label]
