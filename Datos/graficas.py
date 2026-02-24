@@ -13,11 +13,11 @@ from matplotlib.widgets import Slider, Button, CheckButtons
 # ===================== CONFIG (EDITA AQUÍ) =====================
 
 CSV_PATHS = [
-    "/home/adrian/Giroscopio_PCB_EMT/Resultados/prueba_vibracionesJueves18_Asiento_ttyACM1_20251218_124814.csv",
+    "/home/adrian/Giroscopio_PCB_EMT/Cocheras_VIernes_13/prueba_Cocheras_OUT_1_Asiento_ttyUSB0_20260213_103433_fixed.csv",
 ]
 
 OUTPUT_DIR = "/home/adrian/Giroscopio_PCB_EMT/Resultados/Plots"
-OUTPUT_BASENAME = "resumen_mpu_velocidad"   # nombre base del PNG resultante
+OUTPUT_BASENAME = "Pruebas_Viernes_13"   # nombre base del PNG resultante
 
 DEFAULT_WINDOW_S = 30.0
 
@@ -34,7 +34,7 @@ class Dataset:
     v: np.ndarray
 
 
-def _safe_float(x) -> float:
+def _safe_float(x):
     if x is None:
         return math.nan
     s = str(x).strip()
@@ -46,7 +46,7 @@ def _safe_float(x) -> float:
         return math.nan
 
 
-def load_dataset(csv_path: str) -> Dataset:
+def load_dataset(csv_path: str):
     with open(csv_path, "r", newline="") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
@@ -99,7 +99,7 @@ def load_dataset(csv_path: str) -> Dataset:
     return Dataset(name=name, t=t_arr, ax=ax_arr, ay=ay_arr, az=az_arr, v=v_arr)
 
 
-def _slice_by_time(t: np.ndarray, t0: float, t1: float) -> np.ndarray:
+def _slice_by_time(t: np.ndarray, t0: float, t1: float):
     i0 = np.searchsorted(t, t0, side="left")
     i1 = np.searchsorted(t, t1, side="right")
     return np.arange(i0, i1)
@@ -121,14 +121,14 @@ def main():
     fig, (ax_acc, ax_vel) = plt.subplots(2, 1, sharex=True, figsize=(12, 7))
     plt.subplots_adjust(left=0.08, right=0.78, bottom=0.18, top=0.92)
 
-    fig.suptitle("MPU (X/Y/Z) + Velocidad (km/h) — Interactivo")
+    fig.suptitle("Gráfico Vibraciones y Velocidad")
 
     ax_acc.set_ylabel("Aceleración [m/s²]")
     ax_acc.set_title("Aceleración XYZ")
 
     ax_vel.set_ylabel("Velocidad [km/h]")
     ax_vel.set_xlabel("Tiempo [s]")
-    ax_vel.set_title("Velocidad (Haversine)")
+    ax_vel.set_title("Velocidad vehículo")
 
     # --------- Líneas ---------
     lines: Dict[str, Dict[str, any]] = {}
@@ -159,21 +159,21 @@ def main():
     s_win = Slider(ax_win, "Ventana (s)", 1.0, max(1.0, t_max), valinit=min(DEFAULT_WINDOW_S, t_max), valstep=0.5)
 
     # --------- CheckButtons señales ---------
-    ax_checks = fig.add_axes([0.80, 0.55, 0.18, 0.25])
+    ax_checks = fig.add_axes([0.80, 0.67, 0.18, 0.25])
     labels = ["Eje X", "Eje Y", "Eje Z", "Velocidad"]
     actives = [True, True, True, True]
     checks = CheckButtons(ax_checks, labels, actives)
 
     # --------- Toggle auto-escala Y ---------
-    ax_autoscale = fig.add_axes([0.80, 0.49, 0.18, 0.06])
+    ax_autoscale = fig.add_axes([0.80, 0.43, 0.18, 0.25])
     autoscale_btn = CheckButtons(ax_autoscale, ["Auto-escalado Eje Y"], [True])
     autoscale_enabled = {"on": True}
 
     # --------- Botones ---------
-    ax_save = fig.add_axes([0.80, 0.40, 0.18, 0.07])
+    ax_save = fig.add_axes([0.80, 0.28, 0.18, 0.07])
     btn_save = Button(ax_save, "Guardar PNG", hovercolor="0.85")
 
-    ax_close = fig.add_axes([0.80, 0.30, 0.18, 0.07])
+    ax_close = fig.add_axes([0.80, 0.18, 0.18, 0.07])
     btn_close = Button(ax_close, "Cerrar", hovercolor="0.85")
 
     visible = {"Eje X": True, "Eje Y": True, "Eje Z": True, "v": True}

@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.widgets import Button
 
+
 # ========= CONFIGURACIÓN =========
 
 BAUDRATE = 115200
@@ -24,29 +25,40 @@ GPS_DETECT_TIMEOUT_S = 4.0
 GPS_STARTUP_SLEEP_S = 1.0
 
 OUTPUT_DIR = "/home/adrian/Giroscopio_PCB_EMT/Prueba"
-BASE_NAME = "Lunes_23"
+BASE_NAME = "Martes_24"
 
 WINDOW_SECONDS = 60
-SAMPLE_HZ = 100
+SAMPLE_HZ = 50                     # SOLO para el plot/ventana
 MAX_POINTS = WINDOW_SECONDS * SAMPLE_HZ
+
+# --- NUEVO: Hz objetivo para lo que se guarda/procesa ---
+TARGET_LOG_HZ = 50.0               # fija el CSV por downsample usando t_ms (si la entrada no permite 50, quedará por debajo)
+# --------------------------------------------------------
 
 ACC_LIMIT_MS2 = None
 
-G_CONST = 9.80665
-
 DETECT_TIMEOUT_S = 6.0
 STARTUP_SLEEP_S = 1.5
-QUEUE_MAXSIZE = 5000
+QUEUE_MAXSIZE = 20000               # subido para evitar pérdidas por picos
 
 # CSV flush por bloques
-CSV_FLUSH_ROWS = 200
+CSV_FLUSH_ROWS = 500
 CSV_FLUSH_SECS = 1.0
+
+# Sincronización
+SYNC_BROADCAST_ON_START = True
+SYNC_WARMUP_SAMPLES = 300
+SYNC_MAX_LAG_S = 5.0
+
+# Filtro de saltos absurdos en t_ms (para evitar “horas”)
+TMS_BACKWARD_MS = 1000.0            # si retrocede más de 1s -> descartar
+TMS_JUMP_FORWARD_MS = 2000.0        # si salta más de 2s -> descartar
 
 # ========= FIN CONFIGURACIÓN =========
 
 
 def sanitize_filename_component(s):
-    s = s.strip()
+    s = (s or "").strip()
     if not s:
         return "Desconocida"
     s = s.replace(" ", "_")
@@ -55,10 +67,6 @@ def sanitize_filename_component(s):
 
 
 def detectar_ubicacion(ser, timeout_s=5.0):
-    """
-    Espera a recibir una línea que empiece por 'Ubicacion:'.
-    Además envía 'WHO' para forzar respuesta si la ESP32 lo soporta.
-    """
     try:
         ser.write(b"WHO\n")
         ser.flush()
@@ -197,20 +205,17 @@ class GPSManager:
 
         self.seq = 0
         self.last_update_pc_time = None
-
         self.lat = None
         self.lon = None
         self.alt_m = None
         self.sats = None
         self.fix = None
         self.hdop = None
-
         self.velocidad_kmh = None
 
         self._prev_lat = None
         self._prev_lon = None
         self._prev_time = None
-
         self._last_rmc_pc_time = None
 
         self.thread = threading.Thread(target=self._loop, daemon=True)
@@ -331,15 +336,47 @@ class GPSManager:
                 if not parsed:
                     continue
 
-                pc_time = time.time()
+                pc_time = time.perf_counter()
                 self._apply_update(parsed, pc_time)
 
             except Exception:
                 continue
 
 
+class TimeSyncEstimator:
+    def __init__(self, warmup_samples=SYNC_WARMUP_SAMPLES):
+        self.warmup = warmup_samples
+        self.n = 0
+        self.sum_t = 0.0
+        self.sum_p = 0.0
+        self.sum_tt = 0.0
+        self.sum_tp = 0.0
+        self.a = None
+        self.b = None
+
+    def update(self, t_s, pc_s):
+        self.n += 1
+        self.sum_t += t_s
+        self.sum_p += pc_s
+        self.sum_tt += t_s * t_s
+        self.sum_tp += t_s * pc_s
+
+        if self.n >= max(20, self.warmup):
+            denom = (self.n * self.sum_tt - self.sum_t * self.sum_t)
+            if abs(denom) > 1e-9:
+                b = (self.n * self.sum_tp - self.sum_t * self.sum_p) / denom
+                a = (self.sum_p - b * self.sum_t) / self.n
+                self.a = a
+                self.b = b
+
+    def estimate_pc(self, t_s):
+        if self.a is None or self.b is None:
+            return None
+        return self.a + self.b * t_s
+
+
 class DeviceSession:
-    def __init__(self, ser, ubicacion, gps_manager, stop_all_cb):
+    def __init__(self, ser, ubicacion, gps_manager, stop_all_cb, global_start_pc):
         self.ser = ser
         self.port = ser.port
         self.ubicacion = ubicacion
@@ -353,26 +390,17 @@ class DeviceSession:
         self.csv_path = os.path.join(OUTPUT_DIR, f"{BASE_NAME}_{self.ubicacion_safe}_{self.port_safe}_{ts}.csv")
         self.png_path = os.path.join(OUTPUT_DIR, f"{BASE_NAME}_{self.ubicacion_safe}_{self.port_safe}_{ts}.png")
 
-        self.csvfile = open(self.csv_path, "w", newline="")
-        self.csv_writer = csv.writer(self.csvfile)
-        self.csv_writer.writerow([
-            "ubicacion", "t_ms", "pc_time_s", "tiempo_s",
-            "ax_ms2", "ay_ms2", "az_ms2",
-            "gx_dps", "gy_dps", "gz_dps",
-            "gps_lat", "gps_lon", "gps_alt_m", "gps_sats", "gps_fix", "gps_hdop", "velocidad"
-        ])
-        self.csvfile.flush()
+        self.q = queue.Queue(maxsize=QUEUE_MAXSIZE)
+        self.csv_q = queue.Queue(maxsize=QUEUE_MAXSIZE)
 
-        self._rows_since_flush = 0
-        self._last_flush_time = time.time()
+        self.stop_event = threading.Event()
+        self.stopped_lock = threading.Lock()
+        self._stopped = False
 
         self.t_buf = deque(maxlen=MAX_POINTS)
         self.ax_buf = deque(maxlen=MAX_POINTS)
         self.ay_buf = deque(maxlen=MAX_POINTS)
         self.az_buf = deque(maxlen=MAX_POINTS)
-
-        self.start_time_s = None
-        self.pc_start_time = None
 
         self._baseline_ready = False
         self._baseline_n = 200
@@ -381,26 +409,55 @@ class DeviceSession:
         self._bz = 0.0
         self._baseline_buf = []
 
-        self._ylim = None  # autoescala
+        self.global_start_pc = global_start_pc
+        self.sync_est = TimeSyncEstimator()
+        self._tms0 = None
 
-        self.q = queue.Queue(maxsize=QUEUE_MAXSIZE)
+        # --- downsample por t_ms ---
+        self.target_log_hz = float(TARGET_LOG_HZ)
+        self._min_dt_ms = 1000.0 / self.target_log_hz
+        self._last_saved_t_ms = None
+        self._saved_count = 0
+        self._saved_t0_pc = time.perf_counter()
+        # --------------------------
 
-        self.stop_event = threading.Event()
-        self.stopped_lock = threading.Lock()
-        self._stopped = False
+        # --- NUEVO: control de saltos de tiempo en entrada (DeviceSession, no GPS) ---
+        self._last_rx_t_ms = None
+        self.bad_time_jumps = 0
+        # ---------------------------------------------------------------------------
 
-        self.last_seen_gps_seq = 0
+        self._last_t_ms = None
+        self.drop_gaps = 0
+        self.total_samples = 0
+        self.max_gap_ms = 0.0
 
-        self._rx_count = 0
-        self._last_rx_print = time.time()
+        self.csvfile = open(self.csv_path, "w", newline="")
+        self.csv_writer = csv.writer(self.csvfile)
+        self.csv_writer.writerow([
+            "ubicacion", "t_ms", "pc_time_s", "tiempo_s",
+            "ax_ms2", "ay_ms2", "az_ms2",
+            "gx_dps", "gy_dps", "gz_dps",
+            "gps_lat", "gps_lon", "gps_alt_m", "gps_sats", "gps_fix", "gps_hdop", "velocidad",
+            "sync_time_s", "pc_recv_s"
+        ])
+        self.csvfile.flush()
+
+        self._rows_since_flush = 0
+        self._last_flush_time = time.time()
 
         self.fig = None
         self.ani = None
         self.gps_text = None
+        self._ylim = None
         self._setup_plot()
 
         self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self.processor_thread = threading.Thread(target=self._processor_loop, daemon=True)
+        self.writer_thread = threading.Thread(target=self._csv_writer_loop, daemon=True)
+
         self.reader_thread.start()
+        self.processor_thread.start()
+        self.writer_thread.start()
 
         print(f"[{self.port}] CSV:  {self.csv_path}")
         print(f"[{self.port}] PNG:  {self.png_path}")
@@ -447,46 +504,7 @@ class DeviceSession:
             self.stop_all_cb()
 
         self.fig.canvas.mpl_connect("close_event", on_close)
-        self.ani = animation.FuncAnimation(self.fig, self.update, interval=100)
-
-    def _reader_loop(self):
-        while not self.stop_event.is_set():
-            try:
-                line_bytes = self.ser.readline()
-                if not line_bytes:
-                    continue
-
-                line_str = line_bytes.decode("utf-8", errors="ignore").strip()
-                if not line_str or line_str.startswith("Ubicacion:"):
-                    continue
-
-                parts = line_str.split(",")
-                if len(parts) < 7:
-                    continue
-
-                try:
-                    t_ms, ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw = map(float, parts[:7])
-                except ValueError:
-                    continue
-
-                pc_time = time.time()
-                item = (t_ms, ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw, pc_time)
-
-                if self.q.full():
-                    try:
-                        _ = self.q.get_nowait()
-                    except queue.Empty:
-                        pass
-                self.q.put_nowait(item)
-
-                self._rx_count += 1
-                now = time.time()
-                if now - self._last_rx_print > 2.0:
-                    print(f"[{self.port}] RX muestras: {self._rx_count}")
-                    self._last_rx_print = now
-
-            except Exception:
-                continue
+        self.ani = animation.FuncAnimation(self.fig, self.update_plot, interval=100)
 
     def stop(self):
         with self.stopped_lock:
@@ -514,7 +532,14 @@ class DeviceSession:
         except Exception:
             pass
 
-        print(f"[{self.port}] Sesión detenida.")
+        dt_run = time.perf_counter() - self._saved_t0_pc
+        saved_hz = (self._saved_count / dt_run) if dt_run > 0 else 0.0
+        print(
+            f"[{self.port}] Sesión detenida. total_rx={self.total_samples} "
+            f"saved={self._saved_count} saved_hz~{saved_hz:.1f} "
+            f"bad_time_jumps={self.bad_time_jumps} "
+            f"gaps={self.drop_gaps} max_gap_ms={self.max_gap_ms:.1f}"
+        )
 
     def _format_gps_text(self):
         if not self.gps_manager:
@@ -527,7 +552,7 @@ class DeviceSession:
         vel = s["velocidad"]
         pc_t = s["pc_time"]
 
-        age = (time.time() - pc_t) if pc_t is not None else None
+        age = (time.perf_counter() - pc_t) if pc_t is not None else None
 
         def fmt(x, nd=6):
             if x is None:
@@ -551,26 +576,97 @@ class DeviceSession:
             f"  age(s): {fmt(age, 1)}"
         )
 
-    def update(self, _frame):
+    def _reader_loop(self):
         try:
-            if self.gps_text is not None:
-                self.gps_text.set_text(self._format_gps_text())
+            self.ser.reset_input_buffer()
         except Exception:
             pass
 
-        while True:
+        rx_count = 0
+        last_print = time.perf_counter()
+
+        while not self.stop_event.is_set():
             try:
-                t_ms, ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw, pc_time = self.q.get_nowait()
+                line_bytes = self.ser.readline()
+                if not line_bytes:
+                    continue
+
+                line_str = line_bytes.decode("utf-8", errors="ignore").strip()
+                if not line_str or line_str.startswith("Ubicacion:"):
+                    continue
+
+                parts = line_str.split(",")
+                if len(parts) < 7:
+                    continue
+
+                try:
+                    t_ms, ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw = map(float, parts[:7])
+                except ValueError:
+                    continue
+
+                # filtro de saltos absurdos en t_ms (evita “horas” por una línea corrupta o reset raro)
+                if self._last_rx_t_ms is not None:
+                    dt = t_ms - self._last_rx_t_ms
+                    if dt < -TMS_BACKWARD_MS or dt > TMS_JUMP_FORWARD_MS:
+                        self.bad_time_jumps += 1
+                        # NO actualizar _last_rx_t_ms para no encadenar basura
+                        continue
+                self._last_rx_t_ms = t_ms
+
+                pc_recv = time.perf_counter()
+                item = (t_ms, ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw, pc_recv)
+
+                if self.q.full():
+                    try:
+                        _ = self.q.get_nowait()
+                    except queue.Empty:
+                        pass
+                self.q.put_nowait(item)
+
+                rx_count += 1
+                now = time.perf_counter()
+                if now - last_print > 2.0:
+                    dt_run = now - self._saved_t0_pc
+                    saved_hz = (self._saved_count / dt_run) if dt_run > 0 else 0.0
+                    print(
+                        f"[{self.port}] RX={rx_count} q={self.q.qsize()} csvq={self.csv_q.qsize()} "
+                        f"saved={self._saved_count} saved_hz~{saved_hz:.1f} "
+                        f"bad_time_jumps={self.bad_time_jumps} gaps={self.drop_gaps}"
+                    )
+                    last_print = now
+
+            except Exception as e:
+                # No tragues errores silenciosamente: esto fue lo que te generó CSV vacíos.
+                print(f"[{self.port}] ERROR reader: {e}")
+                continue
+
+    def _processor_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                t_ms, ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw, pc_recv = self.q.get(timeout=0.2)
             except queue.Empty:
-                break
+                continue
 
-            ax_ms2 = ax_raw
-            ay_ms2 = ay_raw
-            az_ms2 = az_raw
+            self.total_samples += 1
 
-            gx_dps = gx_raw
-            gy_dps = gy_raw
-            gz_dps = gz_raw
+            if self._last_t_ms is not None:
+                gap = float(t_ms - self._last_t_ms)
+                if gap > self.max_gap_ms:
+                    self.max_gap_ms = gap
+                if gap > (2.5 * self._min_dt_ms):
+                    self.drop_gaps += 1
+            self._last_t_ms = float(t_ms)
+
+            # downsample para guardar ~TARGET_LOG_HZ
+            if self._last_saved_t_ms is not None:
+                if (t_ms - self._last_saved_t_ms) < self._min_dt_ms:
+                    continue
+            self._last_saved_t_ms = float(t_ms)
+            self._saved_count += 1
+
+            ax_ms2 = float(ax_raw)
+            ay_ms2 = float(ay_raw)
+            az_ms2 = float(az_raw)
 
             if not self._baseline_ready:
                 self._baseline_buf.append((ax_ms2, ay_ms2, az_ms2))
@@ -586,20 +682,24 @@ class DeviceSession:
                 ax_ms2 -= self._bx
                 ay_ms2 -= self._by
                 az_ms2 -= self._bz
+
+            gx_dps = float(gx_raw)
+            gy_dps = float(gy_raw)
+            gz_dps = float(gz_raw)
+
+            if self._tms0 is None:
+                self._tms0 = float(t_ms)
+            tiempo_s = (float(t_ms) - self._tms0) / 1000.0
+            pc_time_s = pc_recv
+
+            self.sync_est.update(tiempo_s, pc_recv)
+            pc_est = self.sync_est.estimate_pc(tiempo_s)
+            if pc_est is None:
+                sync_time_s = ""
             else:
-                ax_ms2 = 0.0
-                ay_ms2 = 0.0
-                az_ms2 = 0.0
+                sync_time_s = pc_est - self.global_start_pc
 
-            if self.start_time_s is None:
-                self.start_time_s = t_ms / 1000.0
-            t_s = t_ms / 1000.0 - self.start_time_s
-
-            if self.pc_start_time is None:
-                self.pc_start_time = pc_time
-            tiempo_s = pc_time - self.pc_start_time
-
-            self.t_buf.append(t_s)
+            self.t_buf.append(tiempo_s)
             self.ax_buf.append(ax_ms2)
             self.ay_buf.append(ay_ms2)
             self.az_buf.append(az_ms2)
@@ -607,9 +707,7 @@ class DeviceSession:
             gps_lat = gps_lon = gps_alt = gps_sats = gps_fix = gps_hdop = velocidad = ""
             if self.gps_manager:
                 snap = self.gps_manager.get_snapshot()
-                seq = snap["seq"]
-                if seq != self.last_seen_gps_seq and snap["lat"] is not None and snap["lon"] is not None:
-                    self.last_seen_gps_seq = seq
+                if snap["lat"] is not None and snap["lon"] is not None:
                     gps_lat = snap["lat"]
                     gps_lon = snap["lon"]
                     gps_alt = snap["alt_m"] if snap["alt_m"] is not None else ""
@@ -618,19 +716,45 @@ class DeviceSession:
                     gps_hdop = snap["hdop"] if snap["hdop"] is not None else ""
                     velocidad = snap["velocidad"] if snap["velocidad"] is not None else ""
 
-            self.csv_writer.writerow([
-                self.ubicacion, t_ms, pc_time, tiempo_s,
+            row = [
+                self.ubicacion, t_ms, pc_time_s, tiempo_s,
                 ax_ms2, ay_ms2, az_ms2,
                 gx_dps, gy_dps, gz_dps,
-                gps_lat, gps_lon, gps_alt, gps_sats, gps_fix, gps_hdop, velocidad
-            ])
+                gps_lat, gps_lon, gps_alt, gps_sats, gps_fix, gps_hdop, velocidad,
+                sync_time_s, pc_recv
+            ]
 
-            self._rows_since_flush += 1
-            now = time.time()
-            if self._rows_since_flush >= CSV_FLUSH_ROWS or (now - self._last_flush_time) >= CSV_FLUSH_SECS:
-                self.csvfile.flush()
-                self._rows_since_flush = 0
-                self._last_flush_time = now
+            if self.csv_q.full():
+                try:
+                    _ = self.csv_q.get_nowait()
+                except queue.Empty:
+                    pass
+            self.csv_q.put_nowait(row)
+
+    def _csv_writer_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                row = self.csv_q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            try:
+                self.csv_writer.writerow(row)
+                self._rows_since_flush += 1
+                now = time.time()
+                if self._rows_since_flush >= CSV_FLUSH_ROWS or (now - self._last_flush_time) >= CSV_FLUSH_SECS:
+                    self.csvfile.flush()
+                    self._rows_since_flush = 0
+                    self._last_flush_time = now
+            except Exception:
+                continue
+
+    def update_plot(self, _frame):
+        try:
+            if self.gps_text is not None:
+                self.gps_text.set_text(self._format_gps_text())
+        except Exception:
+            pass
 
         if not self.t_buf:
             return (
@@ -651,7 +775,6 @@ class DeviceSession:
         for axis in (self.ax_all, self.ax_x, self.ax_y, self.ax_z):
             axis.set_xlim(t_min, t_max)
 
-        # ----- Autoescala robusta -----
         if ACC_LIMIT_MS2 is not None:
             ymin, ymax = -ACC_LIMIT_MS2, ACC_LIMIT_MS2
         else:
@@ -663,11 +786,10 @@ class DeviceSession:
                 k = int(0.99 * (len(abs_vals) - 1))
                 amp = abs_vals[k] if abs_vals else 0.0
 
-                MIN_RANGE = 0.5  # m/s²
+                MIN_RANGE = 0.5
                 amp = max(amp, MIN_RANGE / 2.0)
 
                 new_ymin, new_ymax = -amp, amp
-
                 margin = 0.15 * (new_ymax - new_ymin)
                 new_ymin -= margin
                 new_ymax += margin
@@ -828,6 +950,15 @@ def create_control_window(stop_all_cb):
     return fig
 
 
+def broadcast_sync(esp32_list):
+    for ser, _loc in esp32_list:
+        try:
+            ser.write(b"SYNC\n")
+            ser.flush()
+        except Exception:
+            pass
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -840,6 +971,12 @@ def main():
             except Exception:
                 pass
         return
+
+    global_start_pc = time.perf_counter()
+
+    if SYNC_BROADCAST_ON_START:
+        broadcast_sync(found)
+        time.sleep(0.1)
 
     gps_manager = GPSManager(gps_ser) if gps_ser else None
 
@@ -874,7 +1011,7 @@ def main():
 
     for ser, ubicacion in found:
         try:
-            sessions.append(DeviceSession(ser, ubicacion, gps_manager, stop_all))
+            sessions.append(DeviceSession(ser, ubicacion, gps_manager, stop_all, global_start_pc))
         except Exception as e:
             print(f"No se pudo crear sesión para {ser.port}: {e}")
             try:
