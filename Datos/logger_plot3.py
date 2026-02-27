@@ -16,7 +16,7 @@ from matplotlib.widgets import Button
 
 # ========= CONFIGURACIÓN =========
 
-BAUDRATE = 115200
+BAUDRATE = 460800
 
 # GPS
 GPS_BAUDRATE = 9600

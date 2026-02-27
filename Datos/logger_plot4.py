@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import re
 import csv
@@ -14,45 +15,63 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.widgets import Button
 
+# scipy para filtros ISO 2631 (opcional: si no está disponible, se omite la ponderación)
+try:
+    from scipy.signal import butter, sosfreqz, sosfilt, sosfilt_zi
+    import numpy as _np
+    _SCIPY_OK = True
+except ImportError:
+    _SCIPY_OK = False
+    print("[AVISO] scipy/numpy no disponibles. Ponderación ISO 2631 desactivada.")
+
 
 # ========= CONFIGURACIÓN =========
 
-BAUDRATE = 115200
+BAUDRATE = 460800
 
 # GPS
 GPS_BAUDRATE = 9600
 GPS_DETECT_TIMEOUT_S = 4.0
 GPS_STARTUP_SLEEP_S = 1.0
 
-OUTPUT_DIR = "/home/adrian/Giroscopio_PCB_EMT/Prueba"
-BASE_NAME = "Martes_24"
+OUTPUT_DIR = "/home/adrian/Giroscopio_PCB_EMT/Solo_Pruebas/Viernes_27"
+BASE_NAME = "Viernes_27_80HZ"
 
-WINDOW_SECONDS = 60
-SAMPLE_HZ = 50                     # SOLO para el plot/ventana
-MAX_POINTS = WINDOW_SECONDS * SAMPLE_HZ
+WINDOW_SECONDS = 5
+SAMPLE_HZ = 30                     # SOLO para el plot/ventana (visual)
+MAX_POINTS = max(10, int(WINDOW_SECONDS * SAMPLE_HZ))
 
-# --- NUEVO: Hz objetivo para lo que se guarda/procesa ---
-TARGET_LOG_HZ = 50.0               # fija el CSV por downsample usando t_ms (si la entrada no permite 50, quedará por debajo)
-# --------------------------------------------------------
+# Hz objetivo para lo que se guarda/procesa (downsample por t_ms)
+TARGET_LOG_HZ = 83.0               # Hz de guardado = ODR del firmware (SMPLRT_DIV=11 → 83.33 Hz exacto)
 
-ACC_LIMIT_MS2 = None
+ACC_LIMIT_MS2 = 10
 
 DETECT_TIMEOUT_S = 6.0
 STARTUP_SLEEP_S = 1.5
-QUEUE_MAXSIZE = 20000               # subido para evitar pérdidas por picos
+QUEUE_MAXSIZE = 20000
 
 # CSV flush por bloques
-CSV_FLUSH_ROWS = 500
-CSV_FLUSH_SECS = 1.0
+CSV_FLUSH_ROWS = 2000
+CSV_FLUSH_SECS = 3.0
 
-# Sincronización
+# Sincronización (solo “cero” temporal si el firmware lo implementa así)
 SYNC_BROADCAST_ON_START = True
 SYNC_WARMUP_SAMPLES = 300
-SYNC_MAX_LAG_S = 5.0
 
-# Filtro de saltos absurdos en t_ms (para evitar “horas”)
-TMS_BACKWARD_MS = 1000.0            # si retrocede más de 1s -> descartar
-TMS_JUMP_FORWARD_MS = 2000.0        # si salta más de 2s -> descartar
+# --- Control de t_ms para evitar desfases/rupturas ---
+TMS_BACKWARD_MS = 1000.0           # si retrocede >1s => reset/ruptura
+TMS_JUMP_FORWARD_MS = 2000.0       # si salta >2s => ruptura
+
+# --- Plot optimización ---
+PLOT_INTERVAL_MS = 200             # 5 fps
+PLOT_DECIMATE = 1                  # dibuja 1 de cada N (visual)
+# IMPORTANTE: blit suele dar “cosas extrañas” con textos/leyendas y backends.
+# Para evitar rarezas: desactívalo.
+USE_BLIT = False
+
+# --- CSV writer batch ---
+CSV_BATCH_MAX = 1000
+CSV_DRAIN_ON_STOP_S = 1.5
 
 # ========= FIN CONFIGURACIÓN =========
 
@@ -68,16 +87,28 @@ def sanitize_filename_component(s):
 
 def detectar_ubicacion(ser, timeout_s=5.0):
     try:
-        ser.write(b"WHO\n")
-        ser.flush()
+        ser.reset_input_buffer()
     except Exception:
         pass
 
     inicio = time.time()
     ubicacion = "Desconocida"
+    last_who = 0.0
 
     while time.time() - inicio < timeout_s:
-        line_bytes = ser.readline()
+        if time.time() - last_who > 1.0:
+            try:
+                ser.write(b"WHO\n")
+                ser.flush()
+                last_who = time.time()
+            except Exception:
+                pass
+
+        try:
+            line_bytes = ser.readline()
+        except Exception:
+            break
+
         if not line_bytes:
             continue
 
@@ -91,11 +122,56 @@ def detectar_ubicacion(ser, timeout_s=5.0):
             print(f"Ubicación detectada en {ser.port}: '{ubicacion}'")
             break
 
+        # Si vemos NMEA, probablemente es GPS
+        if line_str.startswith("$G"):
+            print(f"[{ser.port}] Se detectó NMEA (posible GPS), abortando chequeo ESP32.")
+            break
+
     return ubicacion
 
 
 def is_candidate_port(dev):
     return dev.startswith("/dev/ttyACM") or dev.startswith("/dev/ttyUSB")
+
+
+def _design_iso2631_filters(fs):
+    """
+    Diseña los filtros de ponderación ISO 2631-1 como SOS digitales a fs Hz.
+
+    Wk (eje Z vertical):
+      Cascada de HP 2º@0.4Hz + bandpass@5.6Hz Q=0.91 + LP 2º@12.5Hz
+      Modela la respuesta del cuerpo humano a vibraciones verticales.
+
+    Wd (ejes X/Y horizontales):
+      Cascada de HP 2º@0.4Hz + LP 2º@2.0Hz
+      Modela la sensibilidad horizontal del cuerpo.
+
+    Retorna (sos_wk, gain_wk, sos_wd, gain_wd) o (None,)*4 si scipy no está.
+    """
+    if not _SCIPY_OK:
+        return None, 1.0, None, 1.0
+
+    nyq = fs / 2.0
+
+    # --- Wk ---
+    sos_hp  = butter(2, 0.4 / nyq,  btype='high', output='sos')
+    f0_k, Q_k = 5.6, 0.91
+    bw_k  = f0_k / Q_k
+    fl_k  = max(0.2, f0_k - bw_k / 2)
+    fh_k  = min(nyq * 0.9, f0_k + bw_k / 2)
+    sos_bp  = butter(2, [fl_k / nyq, fh_k / nyq], btype='band', output='sos')
+    sos_lp_k = butter(2, min(12.5 / nyq, 0.9), btype='low',  output='sos')
+    sos_wk  = _np.vstack([sos_hp, sos_bp, sos_lp_k])
+    _, H = sosfreqz(sos_wk, worN=[2 * _np.pi * f0_k / fs])
+    gain_wk = max(float(abs(H[0])), 1e-12)
+
+    # --- Wd ---
+    sos_lp_d = butter(2, min(2.0 / nyq, 0.9), btype='low', output='sos')
+    sos_wd   = _np.vstack([sos_hp, sos_lp_d])
+    _, H = sosfreqz(sos_wd, worN=[2 * _np.pi * 1.5 / fs])
+    gain_wd = max(float(abs(H[0])), 1e-12)
+
+    return sos_wk, gain_wk, sos_wd, gain_wd
 
 
 # ================= GPS: utilidades =================
@@ -150,7 +226,6 @@ def parse_nmea_sentence(line):
         status = parts[2] if len(parts) > 2 else ""
         lat = _nmea_to_decimal(parts[3], parts[4], is_lat=True) if len(parts) > 4 else None
         lon = _nmea_to_decimal(parts[5], parts[6], is_lat=False) if len(parts) > 6 else None
-
         out["type"] = "RMC"
         out["status"] = status
         out["lat"] = lat
@@ -162,26 +237,22 @@ def parse_nmea_sentence(line):
         lon = _nmea_to_decimal(parts[4], parts[5], is_lat=False) if len(parts) > 5 else None
 
         fix_q = sats = hdop = alt = None
-
         try:
             fix_q = int(parts[6]) if parts[6] else None
         except Exception:
-            fix_q = None
-
+            pass
         try:
             sats = int(parts[7]) if parts[7] else None
         except Exception:
-            sats = None
-
+            pass
         try:
             hdop = float(parts[8]) if parts[8] else None
         except Exception:
-            hdop = None
-
+            pass
         try:
             alt = float(parts[9]) if parts[9] else None
         except Exception:
-            alt = None
+            pass
 
         out["type"] = "GGA"
         out["lat"] = lat
@@ -226,6 +297,10 @@ class GPSManager:
     def stop(self):
         self._stop.set()
         try:
+            self.thread.join(timeout=1.0)
+        except Exception:
+            pass
+        try:
             self.ser.close()
         except Exception:
             pass
@@ -250,11 +325,11 @@ class GPSManager:
         lon = update.get("lon", None)
 
         with self._lock:
-            if "alt_m" in update and update["alt_m"] is not None:
+            if update.get("alt_m", None) is not None:
                 self.alt_m = update["alt_m"]
-            if "sats" in update and update["sats"] is not None:
+            if update.get("sats", None) is not None:
                 self.sats = update["sats"]
-            if "hdop" in update and update["hdop"] is not None:
+            if update.get("hdop", None) is not None:
                 self.hdop = update["hdop"]
 
             fix_val = self.fix
@@ -264,7 +339,7 @@ class GPSManager:
                     fix_val = True
                 elif status == "V":
                     fix_val = False
-            if update.get("type") == "GGA":
+            elif update.get("type") == "GGA":
                 fix_q = update.get("fix_q", None)
                 if fix_q is not None:
                     fix_val = fix_q > 0
@@ -274,15 +349,13 @@ class GPSManager:
                 self.lon = lon
             self.fix = fix_val
 
-            if lat is None or lon is None:
-                return
-            if fix_val is not True:
+            if lat is None or lon is None or fix_val is not True:
                 return
 
             emit = False
             if update.get("type") == "RMC":
-                if update.get("status", "") == "A":
-                    emit = True
+                emit = (update.get("status", "") == "A")
+                if emit:
                     self._last_rmc_pc_time = pc_time
             elif update.get("type") == "GGA":
                 if self._last_rmc_pc_time is None or (pc_time - self._last_rmc_pc_time) > 1.2:
@@ -292,9 +365,8 @@ class GPSManager:
                 return
 
             MIN_DT = 0.35
-            if self.last_update_pc_time is not None:
-                if (pc_time - self.last_update_pc_time) < MIN_DT:
-                    return
+            if self.last_update_pc_time is not None and (pc_time - self.last_update_pc_time) < MIN_DT:
+                return
 
             if self._prev_lat is not None and self._prev_lon is not None and self._prev_time is not None:
                 dt = pc_time - self._prev_time
@@ -402,6 +474,10 @@ class DeviceSession:
         self.ay_buf = deque(maxlen=MAX_POINTS)
         self.az_buf = deque(maxlen=MAX_POINTS)
 
+        self._plot_min_dt_s = 1.0 / float(SAMPLE_HZ)   # 30 Hz visual
+        self._last_plot_push_s = None                  # último tiempo_s que metimos al plot
+        self._plot_lock = threading.Lock()              # protege t_buf, ax_buf, ay_buf, az_buf
+
         self._baseline_ready = False
         self._baseline_n = 200
         self._bx = 0.0
@@ -413,23 +489,22 @@ class DeviceSession:
         self.sync_est = TimeSyncEstimator()
         self._tms0 = None
 
-        # --- downsample por t_ms ---
         self.target_log_hz = float(TARGET_LOG_HZ)
         self._min_dt_ms = 1000.0 / self.target_log_hz
-        self._last_saved_t_ms = None
+        self._next_save_t_ms = None
         self._saved_count = 0
         self._saved_t0_pc = time.perf_counter()
-        # --------------------------
 
-        # --- NUEVO: control de saltos de tiempo en entrada (DeviceSession, no GPS) ---
         self._last_rx_t_ms = None
         self.bad_time_jumps = 0
-        # ---------------------------------------------------------------------------
+        self.time_resets = 0
 
         self._last_t_ms = None
         self.drop_gaps = 0
         self.total_samples = 0
         self.max_gap_ms = 0.0
+
+        self._dt_hist = deque(maxlen=400)  # para estimar Hz reales del firmware con mediana(dt)
 
         self.csvfile = open(self.csv_path, "w", newline="")
         self.csv_writer = csv.writer(self.csvfile)
@@ -437,13 +512,61 @@ class DeviceSession:
             "ubicacion", "t_ms", "pc_time_s", "tiempo_s",
             "ax_ms2", "ay_ms2", "az_ms2",
             "gx_dps", "gy_dps", "gz_dps",
+            # Ponderación ISO 2631-1 por muestra
+            "az_wk",        # Wk-weighted az [m/s²] — eje vertical
+            "ax_wd",        # Wd-weighted ax [m/s²] — horizontal
+            "ay_wd",        # Wd-weighted ay [m/s²] — horizontal
+            # RMS de ventana deslizante de 1 s (ISO 2631-1 § 5.2)
+            "aw_z_rms1s",   # a_wz: RMS 1s de az_wk [m/s²]
+            "aw_h_rms1s",   # a_wh: RMS 1s de sqrt(ax_wd²+ay_wd²) [m/s²]
+            # VDV acumulado desde inicio de sesión (ISO 2631-1 Annex B)
+            "vdv_z",        # VDV_z = (sum az_wk^4 * dt)^0.25  [m/s^1.75]
+            "vdv_h",        # VDV_h = (sum a_wh^4 * dt)^0.25   [m/s^1.75]
+            # Crest Factor de ventana 1 s (ISO 2631-1 § 5.3; si CF>9 usar VDV)
+            "cf_z",         # |pico az_wk| / aw_z_rms1s
+            "cf_h",         # |pico a_wh| / aw_h_rms1s
+            # Jerk (tirón): tasa de cambio de aceleración [m/s³]
+            "jerk_z_ms3",   # d(az_ms2)/dt — detecta baches y frenadas bruscas
+            "jerk_h_ms3",   # d(sqrt(ax²+ay²))/dt  — detecta virajes bruscos
             "gps_lat", "gps_lon", "gps_alt_m", "gps_sats", "gps_fix", "gps_hdop", "velocidad",
-            "sync_time_s", "pc_recv_s"
+            "sync_time_s", "pc_recv_s",
+            "segment_id"
         ])
         self.csvfile.flush()
-
         self._rows_since_flush = 0
         self._last_flush_time = time.time()
+
+        self.segment_id = 0
+
+        # --- Filtros ISO 2631-1 ---
+        self._sos_wk, self._gain_wk, self._sos_wd, self._gain_wd = \
+            _design_iso2631_filters(float(TARGET_LOG_HZ))
+        self._iso_ok = self._sos_wk is not None
+        if self._iso_ok:
+            self._zi_wk_z = sosfilt_zi(self._sos_wk)
+            self._zi_wd_x = sosfilt_zi(self._sos_wd)
+            self._zi_wd_y = sosfilt_zi(self._sos_wd)
+            # Buffers circulares para RMS de 1 segundo
+            _buf = max(10, int(TARGET_LOG_HZ * 1.0))
+            self._buf_wk = deque(maxlen=_buf)
+            self._buf_wd = deque(maxlen=_buf)
+        self._aw_z_rms1s = 0.0
+        self._aw_h_rms1s = 0.0
+
+        # --- VDV: acumuladores de cuarta potencia (ISO 2631-1 Annex B) ---
+        # VDV(T) = (sum_i [a_w[i]^4 * dt])^0.25   [m/s^1.75]
+        self._dt_vdv = 1.0 / float(TARGET_LOG_HZ)      # intervalo de muestreo [s]
+        self._vdv_z_acc = 0.0                           # acumulador a_wz^4 * dt
+        self._vdv_h_acc = 0.0                           # acumulador a_wh^4 * dt
+
+        # --- Crest Factor: pico de ventana 1 s (ISO 2631-1 § 5.3) ---
+        _cf_buf = max(10, int(TARGET_LOG_HZ * 1.0))
+        self._buf_wk_cf = deque(maxlen=_cf_buf)         # az_wk para CF
+        self._buf_wd_cf = deque(maxlen=_cf_buf)         # a_wh para CF
+
+        # --- Jerk: diferencia hacia atrás [m/s³] ---
+        self._prev_az = None
+        self._prev_ah = None                            # sqrt(ax²+ay²) anterior
 
         self.fig = None
         self.ani = None
@@ -451,9 +574,9 @@ class DeviceSession:
         self._ylim = None
         self._setup_plot()
 
-        self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
-        self.processor_thread = threading.Thread(target=self._processor_loop, daemon=True)
-        self.writer_thread = threading.Thread(target=self._csv_writer_loop, daemon=True)
+        self.reader_thread = threading.Thread(target=self._reader_loop)
+        self.processor_thread = threading.Thread(target=self._processor_loop)
+        self.writer_thread = threading.Thread(target=self._csv_writer_loop)
 
         self.reader_thread.start()
         self.processor_thread.start()
@@ -468,6 +591,7 @@ class DeviceSession:
 
         self.ax_all, self.ax_x, self.ax_y, self.ax_z = ax_all, ax_x, ax_y, ax_z
 
+        # NOTA: evitamos animated=True y blit para prevenir “cosas raras”
         self.line_all_x, = ax_all.plot([], [], label="ax", color="r")
         self.line_all_y, = ax_all.plot([], [], label="ay", color="g")
         self.line_all_z, = ax_all.plot([], [], label="az", color="b")
@@ -475,6 +599,7 @@ class DeviceSession:
         ax_all.set_title("Aceleración XYZ")
         ax_all.legend(loc="upper right")
 
+        
         self.line_x, = ax_x.plot([], [], color="r")
         ax_x.set_title("Eje X")
         ax_x.set_ylabel("ax [m/s²]")
@@ -491,7 +616,6 @@ class DeviceSession:
         ax_y.set_xlabel("Tiempo (s)")
 
         self.fig.suptitle(f"ESP32: {self.ubicacion}  |  Puerto: {self.port}")
-
         try:
             self.fig.canvas.manager.set_window_title(f"MPU6050 - {self.ubicacion} - {self.port}")
         except Exception:
@@ -504,7 +628,14 @@ class DeviceSession:
             self.stop_all_cb()
 
         self.fig.canvas.mpl_connect("close_event", on_close)
-        self.ani = animation.FuncAnimation(self.fig, self.update_plot, interval=100)
+
+        self.ani = animation.FuncAnimation(
+            self.fig,
+            self.update_plot,
+            interval=PLOT_INTERVAL_MS,
+            blit=False,
+            cache_frame_data=False,
+        )
 
     def stop(self):
         with self.stopped_lock:
@@ -514,17 +645,33 @@ class DeviceSession:
 
         self.stop_event.set()
 
+        # Cierra serie primero para cortar el producer
+        try:
+            self.ser.close()
+        except Exception:
+            pass
+
+        # deja vaciar CSV un poco
+        t0 = time.time()
+        while time.time() - t0 < CSV_DRAIN_ON_STOP_S:
+            if self.csv_q.empty():
+                break
+            time.sleep(0.01)
+
+        # joins “cortesía” para minimizar truncados
+        for th in (self.reader_thread, self.processor_thread, self.writer_thread):
+            try:
+                th.join(timeout=2.0)
+            except Exception:
+                pass
+
+        # guarda figura
         try:
             if self.fig is not None:
                 self.fig.savefig(self.png_path)
                 print(f"[{self.port}] Gráfica guardada en {self.png_path}")
         except Exception as e:
             print(f"[{self.port}] No se pudo guardar la gráfica: {e}")
-
-        try:
-            self.ser.close()
-        except Exception:
-            pass
 
         try:
             self.csvfile.flush()
@@ -534,11 +681,19 @@ class DeviceSession:
 
         dt_run = time.perf_counter() - self._saved_t0_pc
         saved_hz = (self._saved_count / dt_run) if dt_run > 0 else 0.0
+
+        extra = ""
+        if self._dt_hist:
+            sdt = sorted(self._dt_hist)
+            med = sdt[len(sdt) // 2]
+            fs_est = 1000.0 / med if med > 0 else 0.0
+            extra = f" fs_tms~{fs_est:.1f}Hz (med_dt={med:.1f}ms)"
+
         print(
             f"[{self.port}] Sesión detenida. total_rx={self.total_samples} "
             f"saved={self._saved_count} saved_hz~{saved_hz:.1f} "
-            f"bad_time_jumps={self.bad_time_jumps} "
-            f"gaps={self.drop_gaps} max_gap_ms={self.max_gap_ms:.1f}"
+            f"bad_time_jumps={self.bad_time_jumps} time_resets={self.time_resets} "
+            f"segments={self.segment_id + 1} gaps={self.drop_gaps} max_gap_ms={self.max_gap_ms:.1f}{extra}"
         )
 
     def _format_gps_text(self):
@@ -551,7 +706,6 @@ class DeviceSession:
         fix, hdop = s["fix"], s["hdop"]
         vel = s["velocidad"]
         pc_t = s["pc_time"]
-
         age = (time.perf_counter() - pc_t) if pc_t is not None else None
 
         def fmt(x, nd=6):
@@ -575,6 +729,23 @@ class DeviceSession:
             f"  velocidad(km/h): {fmt(vel, 2)}\n"
             f"  age(s): {fmt(age, 1)}"
         )
+
+    def _resync_time_base(self, new_t_ms, reason=""):
+        self.time_resets += 1
+        self.segment_id += 1
+
+        self._tms0 = float(new_t_ms)
+        self._next_save_t_ms = None
+        self._last_t_ms = None
+        self._last_rx_t_ms = float(new_t_ms)
+
+        self.t_buf.clear()
+        self.ax_buf.clear()
+        self.ay_buf.clear()
+        self.az_buf.clear()
+
+        if reason:
+            print(f"[{self.port}] RESYNC t_ms -> {new_t_ms:.1f} ms | {reason} | segment={self.segment_id}")
 
     def _reader_loop(self):
         try:
@@ -604,13 +775,24 @@ class DeviceSession:
                 except ValueError:
                     continue
 
-                # filtro de saltos absurdos en t_ms (evita “horas” por una línea corrupta o reset raro)
+                # saltos grandes => resync
                 if self._last_rx_t_ms is not None:
-                    dt = t_ms - self._last_rx_t_ms
-                    if dt < -TMS_BACKWARD_MS or dt > TMS_JUMP_FORWARD_MS:
+                    dt_jump = t_ms - self._last_rx_t_ms
+                    if dt_jump < -TMS_BACKWARD_MS:
                         self.bad_time_jumps += 1
-                        # NO actualizar _last_rx_t_ms para no encadenar basura
+                        self._resync_time_base(t_ms, reason=f"t_ms retrocede ({dt_jump:.1f} ms)")
                         continue
+                    if dt_jump > TMS_JUMP_FORWARD_MS:
+                        self.bad_time_jumps += 1
+                        self._resync_time_base(t_ms, reason=f"t_ms salta ({dt_jump:.1f} ms)")
+                        continue
+
+                # hist dt para estimar Hz reales (IMPORTANTE: usar prev antes de actualizar)
+                prev = self._last_rx_t_ms
+                if prev is not None:
+                    dt = t_ms - prev
+                    if 0 < dt < 200:
+                        self._dt_hist.append(dt)
                 self._last_rx_t_ms = t_ms
 
                 pc_recv = time.perf_counter()
@@ -628,15 +810,22 @@ class DeviceSession:
                 if now - last_print > 2.0:
                     dt_run = now - self._saved_t0_pc
                     saved_hz = (self._saved_count / dt_run) if dt_run > 0 else 0.0
+
+                    extra = ""
+                    if self._dt_hist:
+                        sdt = sorted(self._dt_hist)
+                        med = sdt[len(sdt) // 2]
+                        fs_est = 1000.0 / med if med > 0 else 0.0
+                        extra = f" fs_tms~{fs_est:.1f}Hz (med_dt={med:.1f}ms)"
+
                     print(
                         f"[{self.port}] RX={rx_count} q={self.q.qsize()} csvq={self.csv_q.qsize()} "
                         f"saved={self._saved_count} saved_hz~{saved_hz:.1f} "
-                        f"bad_time_jumps={self.bad_time_jumps} gaps={self.drop_gaps}"
+                        f"bad_time_jumps={self.bad_time_jumps} seg={self.segment_id}{extra}"
                     )
                     last_print = now
 
             except Exception as e:
-                # No tragues errores silenciosamente: esto fue lo que te generó CSV vacíos.
                 print(f"[{self.port}] ERROR reader: {e}")
                 continue
 
@@ -647,89 +836,160 @@ class DeviceSession:
             except queue.Empty:
                 continue
 
-            self.total_samples += 1
+            try:
+                self.total_samples += 1
 
-            if self._last_t_ms is not None:
-                gap = float(t_ms - self._last_t_ms)
-                if gap > self.max_gap_ms:
-                    self.max_gap_ms = gap
-                if gap > (2.5 * self._min_dt_ms):
-                    self.drop_gaps += 1
-            self._last_t_ms = float(t_ms)
+                if self._last_t_ms is not None:
+                    gap = float(t_ms - self._last_t_ms)
+                    if gap > self.max_gap_ms:
+                        self.max_gap_ms = gap
+                    if gap > (2.5 * self._min_dt_ms):
+                        self.drop_gaps += 1
+                self._last_t_ms = float(t_ms)
 
-            # downsample para guardar ~TARGET_LOG_HZ
-            if self._last_saved_t_ms is not None:
-                if (t_ms - self._last_saved_t_ms) < self._min_dt_ms:
+                # downsample por t_ms (si el firmware emite 76Hz, aquí guardarás ~76Hz aunque pidas 80)
+                if self._next_save_t_ms is None:
+                    self._next_save_t_ms = float(t_ms)
+
+                if t_ms < self._next_save_t_ms:
                     continue
-            self._last_saved_t_ms = float(t_ms)
-            self._saved_count += 1
 
-            ax_ms2 = float(ax_raw)
-            ay_ms2 = float(ay_raw)
-            az_ms2 = float(az_raw)
+                self._next_save_t_ms += self._min_dt_ms
+                if self._next_save_t_ms < t_ms - self._min_dt_ms * 2:
+                    self._next_save_t_ms = float(t_ms)
 
-            if not self._baseline_ready:
-                self._baseline_buf.append((ax_ms2, ay_ms2, az_ms2))
-                if len(self._baseline_buf) >= self._baseline_n:
-                    self._bx = sum(v[0] for v in self._baseline_buf) / self._baseline_n
-                    self._by = sum(v[1] for v in self._baseline_buf) / self._baseline_n
-                    self._bz = sum(v[2] for v in self._baseline_buf) / self._baseline_n
-                    self._baseline_ready = True
-                    self._baseline_buf.clear()
-                    print(f"[{self.port}] Baseline listo: bx={self._bx:.4f}, by={self._by:.4f}, bz={self._bz:.4f}")
+                self._saved_count += 1
 
-            if self._baseline_ready:
-                ax_ms2 -= self._bx
-                ay_ms2 -= self._by
-                az_ms2 -= self._bz
+                ax_ms2 = float(ax_raw)
+                ay_ms2 = float(ay_raw)
+                az_ms2 = float(az_raw)
 
-            gx_dps = float(gx_raw)
-            gy_dps = float(gy_raw)
-            gz_dps = float(gz_raw)
+                if not self._baseline_ready:
+                    self._baseline_buf.append((ax_ms2, ay_ms2, az_ms2))
+                    if len(self._baseline_buf) >= self._baseline_n:
+                        self._bx = sum(v[0] for v in self._baseline_buf) / self._baseline_n
+                        self._by = sum(v[1] for v in self._baseline_buf) / self._baseline_n
+                        self._bz = sum(v[2] for v in self._baseline_buf) / self._baseline_n
+                        self._baseline_ready = True
+                        self._baseline_buf.clear()
+                        print(f"[{self.port}] Baseline listo: bx={self._bx:.4f}, by={self._by:.4f}, bz={self._bz:.4f}")
 
-            if self._tms0 is None:
-                self._tms0 = float(t_ms)
-            tiempo_s = (float(t_ms) - self._tms0) / 1000.0
-            pc_time_s = pc_recv
+                if self._baseline_ready:
+                    ax_ms2 -= self._bx
+                    ay_ms2 -= self._by
+                    az_ms2 -= self._bz
 
-            self.sync_est.update(tiempo_s, pc_recv)
-            pc_est = self.sync_est.estimate_pc(tiempo_s)
-            if pc_est is None:
-                sync_time_s = ""
-            else:
-                sync_time_s = pc_est - self.global_start_pc
+                gx_dps = float(gx_raw)
+                gy_dps = float(gy_raw)
+                gz_dps = float(gz_raw)
 
-            self.t_buf.append(tiempo_s)
-            self.ax_buf.append(ax_ms2)
-            self.ay_buf.append(ay_ms2)
-            self.az_buf.append(az_ms2)
+                if self._tms0 is None:
+                    self._tms0 = float(t_ms)
+                tiempo_s = (float(t_ms) - self._tms0) / 1000.0
+                pc_time_s = pc_recv
 
-            gps_lat = gps_lon = gps_alt = gps_sats = gps_fix = gps_hdop = velocidad = ""
-            if self.gps_manager:
-                snap = self.gps_manager.get_snapshot()
-                if snap["lat"] is not None and snap["lon"] is not None:
-                    gps_lat = snap["lat"]
-                    gps_lon = snap["lon"]
-                    gps_alt = snap["alt_m"] if snap["alt_m"] is not None else ""
-                    gps_sats = snap["sats"] if snap["sats"] is not None else ""
-                    gps_fix = 1 if snap["fix"] is True else (0 if snap["fix"] is False else "")
-                    gps_hdop = snap["hdop"] if snap["hdop"] is not None else ""
-                    velocidad = snap["velocidad"] if snap["velocidad"] is not None else ""
+                self.sync_est.update(tiempo_s, pc_recv)
+                pc_est = self.sync_est.estimate_pc(tiempo_s)
+                sync_time_s = "" if pc_est is None else (pc_est - self.global_start_pc)
 
-            row = [
-                self.ubicacion, t_ms, pc_time_s, tiempo_s,
-                ax_ms2, ay_ms2, az_ms2,
-                gx_dps, gy_dps, gz_dps,
-                gps_lat, gps_lon, gps_alt, gps_sats, gps_fix, gps_hdop, velocidad,
-                sync_time_s, pc_recv
-            ]
+                # buffers plot (submuestreo a SAMPLE_HZ para que la ventana de 5s se llene)
+                if (self._last_plot_push_s is None) or ((tiempo_s - self._last_plot_push_s) >= self._plot_min_dt_s):
+                    with self._plot_lock:
+                        self.t_buf.append(tiempo_s)
+                        self.ax_buf.append(ax_ms2)
+                        self.ay_buf.append(ay_ms2)
+                        self.az_buf.append(az_ms2)
+                    self._last_plot_push_s = tiempo_s
+                # GPS snapshot
+                gps_lat = gps_lon = gps_alt = gps_sats = gps_fix = gps_hdop = velocidad = ""
+                if self.gps_manager:
+                    snap = self.gps_manager.get_snapshot()
+                    if snap["lat"] is not None and snap["lon"] is not None:
+                        gps_lat = snap["lat"]
+                        gps_lon = snap["lon"]
+                        gps_alt = snap["alt_m"] if snap["alt_m"] is not None else ""
+                        gps_sats = snap["sats"] if snap["sats"] is not None else ""
+                        gps_fix = 1 if snap["fix"] is True else (0 if snap["fix"] is False else "")
+                        gps_hdop = snap["hdop"] if snap["hdop"] is not None else ""
+                        velocidad = snap["velocidad"] if snap["velocidad"] is not None else ""
 
-            if self.csv_q.full():
-                try:
-                    _ = self.csv_q.get_nowait()
-                except queue.Empty:
-                    pass
-            self.csv_q.put_nowait(row)
+                # --- ISO 2631-1 ponderación en tiempo real ---
+                az_wk = ax_wd = ay_wd = ""
+                aw_z_rms1s = aw_h_rms1s = ""
+                if self._iso_ok:
+                    az_f, self._zi_wk_z = sosfilt(self._sos_wk, [az_ms2], zi=self._zi_wk_z)
+                    ax_f, self._zi_wd_x = sosfilt(self._sos_wd, [ax_ms2], zi=self._zi_wd_x)
+                    ay_f, self._zi_wd_y = sosfilt(self._sos_wd, [ay_ms2], zi=self._zi_wd_y)
+
+                    az_wk_v = float(az_f[0]) / self._gain_wk
+                    ax_wd_v = float(ax_f[0]) / self._gain_wd
+                    ay_wd_v = float(ay_f[0]) / self._gain_wd
+
+                    self._buf_wk.append(az_wk_v)
+                    self._buf_wd.append(_np.sqrt(ax_wd_v**2 + ay_wd_v**2))
+
+                    rms_z = float(_np.sqrt(_np.mean(_np.square(list(self._buf_wk)))))
+                    rms_h = float(_np.sqrt(_np.mean(_np.square(list(self._buf_wd)))))
+
+                    az_wk      = round(az_wk_v, 6)
+                    ax_wd      = round(ax_wd_v, 6)
+                    ay_wd      = round(ay_wd_v, 6)
+                    aw_z_rms1s = round(rms_z, 6)
+                    aw_h_rms1s = round(rms_h, 6)
+                    self._aw_z_rms1s = rms_z
+                    self._aw_h_rms1s = rms_h
+
+                # --- ISO 2631-1: VDV, Crest Factor y Jerk ---
+                vdv_z = vdv_h = cf_z = cf_h = jerk_z = jerk_h = ""
+                if self._iso_ok:
+                    ah_v = _np.sqrt(ax_wd_v**2 + ay_wd_v**2)
+
+                    # VDV acumulado
+                    self._vdv_z_acc += az_wk_v**4 * self._dt_vdv
+                    self._vdv_h_acc += float(ah_v)**4 * self._dt_vdv
+                    vdv_z = round(self._vdv_z_acc**0.25, 6)
+                    vdv_h = round(self._vdv_h_acc**0.25, 6)
+
+                    # Crest Factor (pico de ventana 1s / RMS 1s)
+                    self._buf_wk_cf.append(abs(az_wk_v))
+                    self._buf_wd_cf.append(float(ah_v))
+                    if rms_z > 1e-9:
+                        cf_z = round(max(self._buf_wk_cf) / rms_z, 3)
+                    if rms_h > 1e-9:
+                        cf_h = round(max(self._buf_wd_cf) / rms_h, 3)
+
+                    # Jerk  [m/s³] = Δa / Δt
+                    if self._prev_az is not None:
+                        jerk_z = round((az_ms2 - self._prev_az) * float(TARGET_LOG_HZ), 4)
+                        jerk_h = round((float(_np.sqrt(ax_ms2**2 + ay_ms2**2)) - self._prev_ah)
+                                       * float(TARGET_LOG_HZ), 4)
+                    self._prev_az = az_ms2
+                    self._prev_ah = float(_np.sqrt(ax_ms2**2 + ay_ms2**2))
+
+                row = [
+                    self.ubicacion, t_ms, pc_time_s, tiempo_s,
+                    ax_ms2, ay_ms2, az_ms2,
+                    gx_dps, gy_dps, gz_dps,
+                    az_wk, ax_wd, ay_wd,
+                    aw_z_rms1s, aw_h_rms1s,
+                    vdv_z, vdv_h,
+                    cf_z, cf_h,
+                    jerk_z, jerk_h,
+                    gps_lat, gps_lon, gps_alt, gps_sats, gps_fix, gps_hdop, velocidad,
+                    sync_time_s, pc_recv,
+                    self.segment_id
+                ]
+
+                if self.csv_q.full():
+                    try:
+                        _ = self.csv_q.get_nowait()
+                    except queue.Empty:
+                        pass
+                self.csv_q.put_nowait(row)
+
+            except Exception as e:
+                print(f"[{self.port}] ERROR processor: {e}")
+                continue
 
     def _csv_writer_loop(self):
         while not self.stop_event.is_set():
@@ -739,80 +999,110 @@ class DeviceSession:
                 continue
 
             try:
-                self.csv_writer.writerow(row)
-                self._rows_since_flush += 1
+                rows = [row]
+                while not self.csv_q.empty() and len(rows) < CSV_BATCH_MAX:
+                    try:
+                        rows.append(self.csv_q.get_nowait())
+                    except queue.Empty:
+                        break
+
+                self.csv_writer.writerows(rows)
+                self._rows_since_flush += len(rows)
                 now = time.time()
                 if self._rows_since_flush >= CSV_FLUSH_ROWS or (now - self._last_flush_time) >= CSV_FLUSH_SECS:
                     self.csvfile.flush()
                     self._rows_since_flush = 0
                     self._last_flush_time = now
-            except Exception:
+            except Exception as e:
+                print(f"[{self.port}] ERROR writer: {e}")
                 continue
 
     def update_plot(self, _frame):
+        artists = (
+            self.line_all_x, self.line_all_y, self.line_all_z,
+            self.line_x, self.line_y, self.line_z
+        )
+
+        # Texto GPS (con blit a veces no se redibuja perfecto, pero no rompe nada)
         try:
             if self.gps_text is not None:
                 self.gps_text.set_text(self._format_gps_text())
         except Exception:
             pass
 
-        if not self.t_buf:
-            return (
-                self.line_all_x, self.line_all_y, self.line_all_z,
-                self.line_x, self.line_y, self.line_z
-            )
+        with self._plot_lock:
+            if not self.t_buf:
+                return artists
+            t_all = list(self.t_buf)
+            ax_all = list(self.ax_buf)
+            ay_all = list(self.ay_buf)
+            az_all = list(self.az_buf)
 
-        self.line_all_x.set_data(self.t_buf, self.ax_buf)
-        self.line_all_y.set_data(self.t_buf, self.ay_buf)
-        self.line_all_z.set_data(self.t_buf, self.az_buf)
+        step = max(1, int(PLOT_DECIMATE))
 
-        self.line_x.set_data(self.t_buf, self.ax_buf)
-        self.line_y.set_data(self.t_buf, self.ay_buf)
-        self.line_z.set_data(self.t_buf, self.az_buf)
+        t_max = t_all[-1]
+        t_min = max(0.0, t_max - WINDOW_SECONDS)
 
-        t_max = self.t_buf[-1]
-        t_min = max(0, t_max - WINDOW_SECONDS)
+        if t_all and (t_max - t_all[0] < WINDOW_SECONDS):
+            t_min = t_all[0]
+
+        # recorta a ventana visible (últimos PLOT_WINDOW_S)
+        i0 = 0
+        for i, tt in enumerate(t_all):
+            if tt >= t_min:
+                i0 = i
+                break
+
+        t = t_all[i0::step]
+        ax = ax_all[i0::step]
+        ay = ay_all[i0::step]
+        az = az_all[i0::step]
+
+        if not t:
+            return artists
+
+        self.line_all_x.set_data(t, ax)
+        self.line_all_y.set_data(t, ay)
+        self.line_all_z.set_data(t, az)
+
+        self.line_x.set_data(t, ax)
+        self.line_y.set_data(t, ay)
+        self.line_z.set_data(t, az)
+
         for axis in (self.ax_all, self.ax_x, self.ax_y, self.ax_z):
             axis.set_xlim(t_min, t_max)
 
+        # Y: fijo recomendado
         if ACC_LIMIT_MS2 is not None:
             ymin, ymax = -ACC_LIMIT_MS2, ACC_LIMIT_MS2
         else:
-            all_vals = list(self.ax_buf) + list(self.ay_buf) + list(self.az_buf)
-            if not all_vals:
-                ymin, ymax = -1.0, 1.0
+            vals = ax + ay + az
+            abs_vals = sorted(abs(v) for v in vals) if vals else [1.0]
+            k = int(0.98 * (len(abs_vals) - 1))
+            amp = abs_vals[k] if abs_vals else 1.0
+
+            MIN_RANGE = 0.5
+            amp = max(amp, MIN_RANGE / 2.0)
+
+            new_ymin, new_ymax = -amp, amp
+            margin = 0.15 * (new_ymax - new_ymin)
+            new_ymin -= margin
+            new_ymax += margin
+
+            SMOOTH = 0.10
+            if self._ylim is None:
+                ymin, ymax = new_ymin, new_ymax
             else:
-                abs_vals = sorted(abs(v) for v in all_vals)
-                k = int(0.99 * (len(abs_vals) - 1))
-                amp = abs_vals[k] if abs_vals else 0.0
-
-                MIN_RANGE = 0.5
-                amp = max(amp, MIN_RANGE / 2.0)
-
-                new_ymin, new_ymax = -amp, amp
-                margin = 0.15 * (new_ymax - new_ymin)
-                new_ymin -= margin
-                new_ymax += margin
-
-                SMOOTH = 0.2
-                if self._ylim is None:
-                    ymin, ymax = new_ymin, new_ymax
-                else:
-                    oymin, oymax = self._ylim
-                    ymin = (1 - SMOOTH) * oymin + SMOOTH * new_ymin
-                    ymax = (1 - SMOOTH) * oymax + SMOOTH * new_ymax
-
-                self._ylim = (ymin, ymax)
+                oymin, oymax = self._ylim
+                ymin = (1 - SMOOTH) * oymin + SMOOTH * new_ymin
+                ymax = (1 - SMOOTH) * oymax + SMOOTH * new_ymax
+            self._ylim = (ymin, ymax)
 
         for axis in (self.ax_all, self.ax_x, self.ax_y, self.ax_z):
             axis.set_ylim(ymin, ymax)
 
-        return (
-            self.line_all_x, self.line_all_y, self.line_all_z,
-            self.line_x, self.line_y, self.line_z
-        )
-
-
+        return artists
+    
 def _detect_gps_on_serial(dev):
     try:
         ser = serial.Serial(dev, GPS_BAUDRATE, timeout=1)
@@ -869,11 +1159,12 @@ def discover_esp32_devices_and_gps():
 
     for p in ports:
         dev = p.device
-
         ser_esp = None
+
         try:
             ser_esp = serial.Serial(dev, BAUDRATE, timeout=1)
 
+            # DTR/RTS a veces reinicia o lía ciertos adaptadores; si te da guerra, comenta este bloque.
             try:
                 ser_esp.dtr = False
                 ser_esp.rts = False
@@ -943,10 +1234,8 @@ def create_control_window(stop_all_cb):
         stop_all_cb()
 
     fig.canvas.mpl_connect("close_event", on_close)
-
     fig._control_ax = ax_button
     fig._control_btn = btn
-
     return fig
 
 
